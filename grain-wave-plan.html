@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TIDES — Asynchronous One-Shot Grain System</title>
+  <style>
+    :root {
+      --ink: #e9f4f1;
+      --muted: #8da39f;
+      --dim: #536a67;
+      --water: #071412;
+      --deep: #030908;
+      --line: rgba(157, 228, 214, .17);
+      --foam: #9de4d6;
+      --foam-hot: #d7fff6;
+      --measure: 1180px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--deep);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .17;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.18'/%3E%3C/svg%3E");
+      mix-blend-mode: soft-light;
+      z-index: 10;
+    }
+
+    a { color: inherit; }
+    button, input { font: inherit; }
+
+    .masthead {
+      position: fixed;
+      inset: 0 0 auto;
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(3, 9, 8, .78);
+      backdrop-filter: blur(14px);
+      z-index: 8;
+    }
+
+    .wordmark {
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .24em;
+    }
+
+    .masthead nav { display: flex; gap: 24px; }
+    .masthead a {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .12em;
+      text-decoration: none;
+      text-transform: uppercase;
+      transition: color .2s ease;
+    }
+    .masthead a:hover { color: var(--foam-hot); }
+
+    .hero {
+      position: relative;
+      min-height: 100svh;
+      overflow: hidden;
+      display: grid;
+      align-items: end;
+      padding: 120px max(28px, calc((100vw - var(--measure)) / 2)) 72px;
+      background: var(--water);
+      border-bottom: 1px solid var(--line);
+    }
+
+    #field {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: .9;
+    }
+
+    .hero-copy {
+      position: relative;
+      z-index: 2;
+      max-width: 800px;
+      animation: rise .8s cubic-bezier(.2,.8,.2,1) both;
+    }
+
+    .eyebrow, .section-number, .label {
+      color: var(--foam);
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 740px;
+      margin: 18px 0 24px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(54px, 8vw, 118px);
+      font-weight: 400;
+      letter-spacing: -.065em;
+      line-height: .87;
+    }
+
+    .lede {
+      max-width: 580px;
+      margin: 0;
+      color: #bad0cb;
+      font-size: clamp(17px, 2vw, 22px);
+      line-height: 1.45;
+    }
+
+    .hero-status {
+      position: absolute;
+      right: max(28px, calc((100vw - var(--measure)) / 2));
+      bottom: 75px;
+      z-index: 2;
+      width: 220px;
+      color: var(--muted);
+      font: 11px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-transform: uppercase;
+    }
+
+    .hero-status::before {
+      content: "";
+      display: block;
+      width: 100%;
+      height: 1px;
+      margin-bottom: 14px;
+      background: var(--foam);
+      transform-origin: left;
+      animation: draw 1.2s .25s both;
+    }
+
+    main { overflow: hidden; }
+    .section {
+      max-width: var(--measure);
+      margin: 0 auto;
+      padding: 120px 28px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 38px;
+      margin-bottom: 72px;
+    }
+
+    h2 {
+      max-width: 820px;
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(38px, 5vw, 72px);
+      font-weight: 400;
+      letter-spacing: -.045em;
+      line-height: 1;
+    }
+
+    .contract {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      border-top: 1px solid var(--line);
+    }
+
+    .contract-item {
+      min-height: 280px;
+      padding: 32px 34px 38px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .contract-item:nth-child(odd) { border-right: 1px solid var(--line); }
+    .contract-item:nth-child(even) { padding-left: 34px; }
+    .contract-item strong {
+      display: block;
+      margin: 18px 0 10px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 36px;
+      font-weight: 400;
+      letter-spacing: -.03em;
+    }
+    .contract-item p { max-width: 440px; margin: 0; color: var(--muted); }
+    .contract-item .value {
+      color: var(--foam-hot);
+      font: 52px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .lab {
+      display: grid;
+      grid-template-columns: 330px minmax(0, 1fr);
+      min-height: 560px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .controls { padding: 42px 34px 42px 0; border-right: 1px solid var(--line); }
+    .control { margin-bottom: 42px; }
+    .control-head { display: flex; justify-content: space-between; margin-bottom: 14px; }
+    .readout { color: var(--foam-hot); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    input[type="range"] { width: 100%; accent-color: var(--foam); }
+    .control-note { margin: 10px 0 0; color: var(--dim); font-size: 12px; }
+    .live-state {
+      margin-top: 72px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font: 12px/1.8 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .live-state b { color: var(--ink); font-weight: 500; }
+
+    .spill-stage { position: relative; min-height: 560px; }
+    #spill { width: 100%; height: 100%; display: block; }
+    .stage-note {
+      position: absolute;
+      left: 26px;
+      bottom: 22px;
+      color: var(--dim);
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .lifecycle { counter-reset: phase; border-top: 1px solid var(--line); }
+    .phase {
+      counter-increment: phase;
+      display: grid;
+      grid-template-columns: 150px 220px minmax(0, 1fr);
+      gap: 38px;
+      padding: 34px 0;
+      border-bottom: 1px solid var(--line);
+      transition: background .25s ease, padding .25s ease;
+    }
+    .phase:hover { padding-left: 16px; background: rgba(157, 228, 214, .035); }
+    .phase::before {
+      content: "0" counter(phase);
+      color: var(--foam);
+      font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .phase h3 { margin: 0; font: 400 26px/1.15 Georgia, "Times New Roman", serif; }
+    .phase p { max-width: 590px; margin: 0; color: var(--muted); }
+
+    .decision-grid {
+      display: grid;
+      grid-template-columns: 210px repeat(3, minmax(0, 1fr));
+      border-top: 1px solid var(--line);
+    }
+    .decision-grid > div { padding: 25px 22px; border-bottom: 1px solid var(--line); }
+    .decision-grid > div:not(:nth-child(4n)) { border-right: 1px solid var(--line); }
+    .decision-grid .row-label { padding-left: 0; color: var(--foam); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; }
+    .decision-grid h3 { margin: 0 0 9px; font-size: 16px; }
+    .decision-grid p { margin: 0; color: var(--muted); font-size: 13px; }
+    .recommended { background: rgba(157, 228, 214, .055); }
+    .flag { display: inline-block; margin-bottom: 10px; color: var(--foam-hot); font: 10px ui-monospace, monospace; text-transform: uppercase; }
+
+    .roadmap { border-top: 1px solid var(--line); }
+    .milestone {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr) 190px;
+      gap: 38px;
+      padding: 38px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .milestone h3 { margin: 0 0 8px; font: 400 28px Georgia, serif; }
+    .milestone p { max-width: 650px; margin: 0; color: var(--muted); }
+    .acceptance { color: var(--foam); font: 11px/1.6 ui-monospace, monospace; text-transform: uppercase; }
+
+    .decision-callout {
+      padding: 110px 28px 130px;
+      text-align: center;
+      background: var(--water);
+    }
+    .decision-callout h2 { max-width: 900px; margin: 16px auto 24px; }
+    .decision-callout p { max-width: 670px; margin: 0 auto; color: var(--muted); font-size: 18px; }
+
+    footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 26px max(28px, calc((100vw - var(--measure)) / 2));
+      color: var(--dim);
+      font: 10px ui-monospace, monospace;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(28px); } }
+    @keyframes draw { from { transform: scaleX(0); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
+
+    @media (max-width: 800px) {
+      .masthead nav { display: none; }
+      .hero { align-items: center; padding-bottom: 60px; }
+      .hero-status { display: none; }
+      .section { padding: 82px 22px; }
+      .section-head, .lab, .phase, .milestone { grid-template-columns: 1fr; gap: 18px; }
+      .contract { grid-template-columns: 1fr; }
+      .contract-item, .contract-item:nth-child(even) { padding: 28px 0; border-right: 0; }
+      .controls { padding-right: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+      .spill-stage { min-height: 420px; }
+      .decision-grid { grid-template-columns: 1fr; }
+      .decision-grid > div { border-right: 0 !important; }
+      .decision-grid .row-label { padding-top: 42px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="wordmark">TIDES / SYSTEM PLAN</div>
+    <nav aria-label="Plan sections">
+      <a href="#contract">Contract</a>
+      <a href="#model">Spill model</a>
+      <a href="#selection">Selection</a>
+      <a href="#roadmap">Build order</a>
+    </nav>
+  </header>
+
+  <section class="hero" aria-labelledby="title">
+    <canvas id="field" aria-hidden="true"></canvas>
+    <div class="hero-copy">
+      <div class="eyebrow">DSP architecture / integrated model 03</div>
+      <h1 id="title">A wave made of overlapping moments.</h1>
+      <p class="lede">Continuously launch 1–64 simultaneous one-shot grains around a moving source centroid. Each generation retains its birth state and spills naturally into the next.</p>
+    </div>
+    <div class="hero-status">Population is concurrent.<br>Lifetime is one-shot.<br>Births are staggered.<br>Loudness stays continuous.</div>
+  </section>
+
+  <main>
+    <section class="section" id="contract">
+      <div class="section-head">
+        <div class="section-number">01 / Contract</div>
+        <h2>Separate how many grains overlap from when each one begins.</h2>
+      </div>
+      <div class="contract">
+        <article class="contract-item">
+          <div class="value">1–64</div>
+          <strong>Density is target overlap.</strong>
+          <p>The scheduler aims to keep this many grains sounding at once. Combined with Size, it determines how frequently new one-shots must begin.</p>
+        </article>
+        <article class="contract-item">
+          <div class="value">ms</div>
+          <strong>Size is lifespan.</strong>
+          <p>Each grain plays once for approximately the selected duration, follows its envelope through release, and then becomes inactive. It never repeats its cycle.</p>
+        </article>
+        <article class="contract-item">
+          <div class="value">ID</div>
+          <strong>Every birth retains state.</strong>
+          <p>A grain captures its source position, speed, pan, lifetime, and envelope state when launched. Later control changes affect new grains, not its remaining life.</p>
+        </article>
+        <article class="contract-item">
+          <div class="value">∿</div>
+          <strong>The centroid carries the wave.</strong>
+          <p>A shared source centroid moves through recorded history. Tide decides how far new births may trail it; Drift adds bounded variation without losing the input.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="model">
+      <div class="section-head">
+        <div class="section-number">02 / Model</div>
+        <h2>Independent one-shots overlapping around one moving source.</h2>
+      </div>
+      <div class="lab">
+        <div class="controls">
+          <div class="control">
+            <div class="control-head"><span class="label">Density</span><span class="readout" id="densityValue">48 grains</span></div>
+            <input id="density" type="range" min="1" max="64" value="48" aria-label="Density">
+            <p class="control-note">Changes the target number sounding simultaneously.</p>
+          </div>
+          <div class="control">
+            <div class="control-head"><span class="label">Size</span><span class="readout" id="sizeValue">120 ms</span></div>
+            <input id="size" type="range" min="5" max="250" value="120" aria-label="Size">
+            <p class="control-note">Changes each new grain’s nominal one-shot lifetime.</p>
+          </div>
+          <div class="control">
+            <div class="control-head"><span class="label">Tide</span><span class="readout" id="tideValue">50%</span></div>
+            <input id="tide" type="range" min="0" max="100" value="50" aria-label="Tide">
+            <p class="control-note">Widens new birth positions from a tight centroid to a broad trailing wash.</p>
+          </div>
+          <div class="control">
+            <div class="control-head"><span class="label">Drift</span><span class="readout" id="driftValue">20%</span></div>
+            <input id="drift" type="range" min="0" max="100" value="20" aria-label="Drift">
+            <p class="control-note">Adds bounded timing, source, speed, and pan variation.</p>
+          </div>
+          <div class="live-state">
+            <div>target sounding <b id="allocated">48</b></div>
+            <div>nominal launch gap <b id="launchGap">2.50 ms</b></div>
+            <div>birth trail <b id="trailWidth">medium</b></div>
+            <div>source policy <b>moving centroid</b></div>
+          </div>
+        </div>
+        <div class="spill-stage">
+          <canvas id="spill"></canvas>
+          <div class="stage-note">One-shot birth stream · dot size shows envelope age</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div class="section-number">03 / Lifecycle</div>
+        <h2>One grain, from birth to release.</h2>
+      </div>
+      <div class="lifecycle">
+        <article class="phase"><h3>Schedule the birth</h3><p>Derive the average launch interval from Density and Size, then add deterministic jitter so births remain even enough for coverage without revealing a mechanical clock.</p></article>
+        <article class="phase"><h3>Choose the source</h3><p>Start near the moving centroid inside the Time history. Tide selects how far behind it the birth may trail; Drift adds a small bounded deviation.</p></article>
+        <article class="phase"><h3>Capture the state</h3><p>Store source position, playback speed, pan, lifetime, and envelope shape at birth. Automation after this point belongs to later generations.</p></article>
+        <article class="phase"><h3>Read and shape once</h3><p>Advance through the buffer for the grain’s Size-derived lifetime while its envelope moves from attack through body to release.</p></article>
+        <article class="phase"><h3>Spill into the cohort</h3><p>Keep sounding while newer grains arrive. Different ages and retained birth states create the overlapping wake without one shared amplitude crest.</p></article>
+        <article class="phase"><h3>Finish permanently</h3><p>Release cleanly, become inactive, and return the voice slot to the pool. A later event is a new grain with new birth state, never a restarted cycle.</p></article>
+      </div>
+    </section>
+
+    <section class="section" id="selection">
+      <div class="section-head">
+        <div class="section-number">04 / Source memory</div>
+        <h2>How each birth chooses audio determines whether the wave remembers.</h2>
+      </div>
+      <div class="decision-grid">
+        <div class="row-label">Policy</div>
+        <div><h3>Fixed anchor</h3><p>Launch every grain from the same static neighborhood.</p></div>
+        <div class="recommended"><span class="flag">Integrated policy</span><h3>Moving shared centroid</h3><p>Keep each birth near a coherent source center, then move that center gradually through history.</p></div>
+        <div><h3>Fresh selection</h3><p>Choose an unrelated random slice for every birth.</p></div>
+
+        <div class="row-label">Result</div>
+        <div><p>Strong repetition and identity; can become a static loop.</p></div>
+        <div class="recommended"><p>Continuity, motion, and recognizable relationships between overlapping generations.</p></div>
+        <div><p>Maximum variation; weak physical identity and little memory.</p></div>
+
+        <div class="row-label">First implementation</div>
+        <div><p>Useful as a diagnostic mode.</p></div>
+        <div class="recommended"><p>Deterministic, bounded, and integrated with the Tide birth trail.</p></div>
+        <div><p>Defer until controlled disorder is explicitly needed.</p></div>
+      </div>
+    </section>
+
+    <section class="section" id="roadmap">
+      <div class="section-head">
+        <div class="section-number">05 / Build order</div>
+        <h2>The scheduler, source motion, and output energy form one system.</h2>
+      </div>
+      <div class="roadmap">
+        <article class="milestone"><div class="label">Foundation</div><div><h3>One-shot voice pool</h3><p>Keep 64 preallocated slots; launch a free slot with complete birth state, then return it only after its release finishes.</p></div><div class="acceptance">No grain restart<br>No audio-thread allocation<br>Clean release</div></article>
+        <article class="milestone"><div class="label">Timing</div><div><h3>Asynchronous scheduler</h3><p>Derive average birth rate from target Density and nominal Size, with deterministic stagger and jitter that remain stable across block boundaries.</p></div><div class="acceptance">Target overlap<br>No audible clock<br>Seed-repeatable</div></article>
+        <article class="milestone"><div class="label">Memory</div><div><h3>Moving source centroid</h3><p>Move one coherent centroid through the Time window. Let Tide trail new births behind it and Drift add only bounded local source and speed variation.</p></div><div class="acceptance">Safe read distance<br>Recognizable input<br>Birth state retained</div></article>
+        <article class="milestone"><div class="label">Energy</div><div><h3>Population-aware output</h3><p>Smooth normalization across the active cohort so asynchronous arrivals change texture without restoring a collective amplitude crest.</p></div><div class="acceptance">Mostly steady loudness<br>No gain pumping<br>Feedback bounded</div></article>
+        <article class="milestone"><div class="label">Tide</div><div><h3>Trailing generations</h3><p>Low Tide keeps births tight behind the centroid; high Tide reaches farther into its wake. Drift varies timing, source, speed, and pan within musical bounds.</p></div><div class="acceptance">Trail widens<br>Overlap preserved<br>No shared tremolo</div></article>
+      </div>
+    </section>
+
+    <section class="decision-callout">
+      <div class="eyebrow">Decision resolved</div>
+      <h2>Density counts simultaneous one-shot voices.</h2>
+      <p>Size determines how long each birth contributes, so the scheduler can maintain the requested overlap. The wave lives in the changing source, age, and spatial relationships between generations—not in a shared loudness cycle.</p>
+    </section>
+  </main>
+
+  <footer><span>TIDES / Asynchronous Grain Spill</span><span>Integrated model v0.3 · 22 July 2026</span></footer>
+
+  <script>
+    const densityInput = document.querySelector('#density');
+    const sizeInput = document.querySelector('#size');
+    const tideInput = document.querySelector('#tide');
+    const driftInput = document.querySelector('#drift');
+    const densityValue = document.querySelector('#densityValue');
+    const sizeValue = document.querySelector('#sizeValue');
+    const tideValue = document.querySelector('#tideValue');
+    const driftValue = document.querySelector('#driftValue');
+    const allocated = document.querySelector('#allocated');
+    const launchGap = document.querySelector('#launchGap');
+    const trailWidth = document.querySelector('#trailWidth');
+    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function updateReadouts() {
+      const n = Number(densityInput.value);
+      const ms = Number(sizeInput.value);
+      const tide = Number(tideInput.value) / 100;
+      densityValue.textContent = `${n} grain${n === 1 ? '' : 's'}`;
+      sizeValue.textContent = `${ms} ms`;
+      tideValue.textContent = `${Math.round(tide * 100)}%`;
+      driftValue.textContent = `${driftInput.value}%`;
+      allocated.textContent = n;
+      launchGap.textContent = `${(ms / n).toFixed(2)} ms`;
+      trailWidth.textContent = tide < .34 ? 'tight' : tide < .67 ? 'medium' : 'broad';
+    }
+    densityInput.addEventListener('input', updateReadouts);
+    sizeInput.addEventListener('input', updateReadouts);
+    tideInput.addEventListener('input', updateReadouts);
+    driftInput.addEventListener('input', updateReadouts);
+    updateReadouts();
+
+    function fit(canvas) {
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(1, Math.floor(rect.width * dpr));
+      const h = Math.max(1, Math.floor(rect.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { ctx, w: rect.width, h: rect.height };
+    }
+
+    const fieldCanvas = document.querySelector('#field');
+    function drawField(t) {
+      const { ctx, w, h } = fit(fieldCanvas);
+      ctx.clearRect(0, 0, w, h);
+      const lines = 7;
+      for (let j = 0; j < lines; j++) {
+        const y0 = h * (.19 + j * .095);
+        ctx.beginPath();
+        for (let x = -10; x <= w + 10; x += 8) {
+          const y = y0 + Math.sin(x * .008 + t * .00035 + j * .8) * (18 + j * 5)
+            + Math.sin(x * .019 - t * .00018) * 7;
+          x === -10 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = `rgba(157,228,214,${.055 + j * .014})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      const count = 58;
+      for (let i = 0; i < count; i++) {
+        const p = i / count;
+        const seed = (i * .61803398875 + .23) % 1;
+        const lifetime = 3100 + seed * 2400;
+        const age = ((t / lifetime + seed) % 1 + 1) % 1;
+        const envelope = Math.sin(Math.PI * age);
+        const x = p * w;
+        const y = h * .48 + Math.sin(p * Math.PI * 4 + t * .00018 + seed) * h * .12;
+        ctx.beginPath();
+        ctx.arc(x, y, 1 + envelope * 2.2, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(215,255,246,${.08 + envelope * .42})`;
+        ctx.fill();
+      }
+      if (!reduceMotion) requestAnimationFrame(drawField);
+    }
+
+    const spillCanvas = document.querySelector('#spill');
+    function drawSpill(t) {
+      const { ctx, w, h } = fit(spillCanvas);
+      ctx.clearRect(0, 0, w, h);
+      const population = Number(densityInput.value);
+      const visible = Math.min(population, 64);
+      const size = Number(sizeInput.value);
+      const tide = Number(tideInput.value) / 100;
+      const drift = Number(driftInput.value) / 100;
+      const shapedTide = tide * tide * (3 - 2 * tide);
+      const trailSpan = .015 + shapedTide * .535;
+      const displayTime = reduceMotion ? 1800 : t;
+      const centroid = .64 + Math.sin(displayTime * .00012) * .09;
+      const left = w * .08;
+      const right = w * .92;
+      const top = h * .18;
+      const bottom = h * .78;
+      const centroidX = left + centroid * (right - left);
+
+      ctx.setLineDash([5, 8]);
+      ctx.beginPath();
+      ctx.moveTo(left, h * .5);
+      ctx.lineTo(right, h * .5);
+      ctx.strokeStyle = 'rgba(157,228,214,.15)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const trailLeft = left + Math.max(.02, centroid - trailSpan) * (right - left);
+      const trailGradient = ctx.createLinearGradient(trailLeft, 0, centroidX, 0);
+      trailGradient.addColorStop(0, 'rgba(157,228,214,0)');
+      trailGradient.addColorStop(1, 'rgba(157,228,214,.14)');
+      ctx.fillStyle = trailGradient;
+      ctx.fillRect(trailLeft, top, centroidX - trailLeft, bottom - top);
+
+      for (let i = 0; i < visible; i++) {
+        const rank = visible > 1 ? i / (visible - 1) : 0;
+        const seedA = (i * .61803398875 + .17) % 1;
+        const seedB = (i * .38196601125 + .43) % 1;
+        const jitter = (seedA - .5) * (.14 + drift * .24);
+        const lifetime = Math.max(40, size) * (1 + drift * (seedB - .5) * .28);
+        const age = ((displayTime / (lifetime * 6) + rank + jitter) % 1 + 1) % 1;
+        const birthTime = displayTime - age * lifetime * 6;
+        const birthCentroid = .64 + Math.sin(birthTime * .00012) * .09;
+        const lag = trailSpan * (.16 + seedA * .84);
+        const sourceJitter = drift * (seedB - .5) * .055;
+        const readMotion = age * Math.min(.12, size / 1400);
+        const xProgress = Math.max(.02, Math.min(.98,
+          birthCentroid - lag + sourceJitter + readMotion));
+        const x = left + xProgress * (right - left);
+        const y = top + (.12 + seedB * .76
+          + Math.sin(displayTime * .0003 + i) * drift * .06) * (bottom - top);
+        const envelope = Math.sin(Math.PI * age);
+        ctx.beginPath();
+        ctx.arc(x, y, 1.2 + envelope * 4.2, 0, Math.PI * 2);
+        ctx.fillStyle = i % 11 === 0
+          ? `rgba(255,132,112,${.12 + envelope * .66})`
+          : `rgba(157,228,214,${.08 + envelope * .68})`;
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(centroidX, top - 18);
+      ctx.lineTo(centroidX, bottom + 18);
+      ctx.strokeStyle = 'rgba(215,255,246,.66)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#9de4d6';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillText('SOURCE CENTROID', Math.min(centroidX + 10, right - 110), top - 5);
+      ctx.fillStyle = '#536a67';
+      ctx.fillText('OLDER BIRTHS', left, bottom + 42);
+      ctx.textAlign = 'right';
+      ctx.fillText('NEWEST BIRTHS', right, bottom + 42);
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#e9f4f1';
+      ctx.font = '400 42px Georgia, serif';
+      ctx.fillText(String(population), w / 2, h * .88);
+      ctx.fillStyle = '#8da39f';
+      ctx.font = '11px ui-monospace, monospace';
+      ctx.fillText('TARGET SIMULTANEOUS GRAINS', w / 2, h * .88 + 24);
+      if (!reduceMotion) requestAnimationFrame(drawSpill);
+    }
+
+    requestAnimationFrame(drawField);
+    requestAnimationFrame(drawSpill);
+  </script>
+</body>
+</html>

@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Scope-locked implementation plan for TIDES Sync mode.">
+  <title>TIDES — Sync Mode Plan</title>
+  <style>
+    :root {
+      --ink: #ecf7f3;
+      --muted: #98aaa5;
+      --dim: #62736e;
+      --deep: #030807;
+      --water: #071311;
+      --surface: #0b1916;
+      --line: rgba(155, 231, 214, .17);
+      --foam: #9be7d6;
+      --hot: #d9fff6;
+      --coral: #ff8a73;
+      --gold: #e6c77c;
+      --measure: 1160px;
+      --nav: 58px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--deep);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .13;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.86' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.2'/%3E%3C/svg%3E");
+      mix-blend-mode: soft-light;
+      z-index: 20;
+    }
+
+    a { color: inherit; }
+    code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+
+    .masthead {
+      position: fixed;
+      inset: 0 0 auto;
+      height: var(--nav);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 0 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(3, 8, 7, .84);
+      backdrop-filter: blur(14px);
+      z-index: 10;
+    }
+
+    .wordmark {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .22em;
+      white-space: nowrap;
+    }
+
+    .masthead nav { display: flex; gap: 22px; }
+    .masthead a {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .12em;
+      text-decoration: none;
+      text-transform: uppercase;
+      transition: color .2s ease;
+    }
+    .masthead a:hover { color: var(--hot); }
+
+    .hero {
+      position: relative;
+      min-height: 88svh;
+      overflow: hidden;
+      display: grid;
+      align-items: end;
+      padding: calc(var(--nav) + 86px) max(28px, calc((100vw - var(--measure)) / 2)) 76px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(90deg, rgba(3, 8, 7, .96) 0%, rgba(3, 8, 7, .7) 48%, rgba(3, 8, 7, .18) 100%),
+        repeating-linear-gradient(90deg, transparent 0, transparent calc(12.5% - 1px), rgba(155, 231, 214, .1) 12.5%),
+        var(--water);
+    }
+
+    .phase-field {
+      position: absolute;
+      inset: var(--nav) 0 0 44%;
+      overflow: hidden;
+      opacity: .72;
+    }
+
+    .phase-field::before,
+    .phase-field::after {
+      content: "";
+      position: absolute;
+      left: 8%;
+      right: -8%;
+      height: 1px;
+      background: var(--foam);
+      box-shadow:
+        0 58px 0 rgba(155, 231, 214, .76),
+        0 116px 0 rgba(155, 231, 214, .58),
+        0 174px 0 rgba(155, 231, 214, .42),
+        0 232px 0 rgba(155, 231, 214, .28),
+        0 290px 0 rgba(155, 231, 214, .18);
+      transform: rotate(-9deg);
+      animation: drift-field 7s ease-in-out infinite alternate;
+    }
+    .phase-field::before { top: 24%; }
+    .phase-field::after { top: 48%; left: 16%; opacity: .3; animation-delay: -3s; }
+
+    .hero-copy {
+      position: relative;
+      z-index: 2;
+      max-width: 780px;
+      animation: rise .7s cubic-bezier(.2, .8, .2, 1) both;
+    }
+
+    .eyebrow, .section-kicker, .tag {
+      color: var(--foam);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 780px;
+      margin: 18px 0 24px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(58px, 9vw, 126px);
+      font-weight: 400;
+      letter-spacing: -.068em;
+      line-height: .86;
+    }
+
+    .lede {
+      max-width: 600px;
+      margin: 0;
+      color: #bdd1cc;
+      font-size: clamp(17px, 2vw, 22px);
+    }
+
+    .status-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 28px;
+      margin-top: 36px;
+      color: var(--muted);
+      font: 11px/1.4 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .status-line b { color: var(--hot); font-weight: 500; }
+    .status-line .open b { color: var(--coral); }
+
+    main { overflow: hidden; }
+    section {
+      max-width: var(--measure);
+      margin: 0 auto;
+      padding: 92px 28px;
+      border-bottom: 1px solid var(--line);
+      scroll-margin-top: var(--nav);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 34px;
+      margin-bottom: 52px;
+    }
+
+    h2 {
+      max-width: 810px;
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(36px, 5vw, 64px);
+      font-weight: 400;
+      letter-spacing: -.046em;
+      line-height: 1;
+    }
+
+    h3 {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 25px;
+      font-weight: 400;
+      letter-spacing: -.02em;
+    }
+
+    p { margin: 0; }
+    .muted { color: var(--muted); }
+    .small { font-size: 13px; }
+
+    .scope {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-top: 1px solid var(--line);
+    }
+    .scope > div { padding: 30px 34px 34px 0; border-bottom: 1px solid var(--line); }
+    .scope > div:nth-child(odd) { border-right: 1px solid var(--line); }
+    .scope > div:nth-child(even) { padding-left: 34px; }
+    .scope p { margin-top: 12px; color: var(--muted); }
+
+    .division-strip {
+      display: grid;
+      grid-template-columns: repeat(9, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-width: 1px 0;
+    }
+    .division-strip span {
+      padding: 22px 8px;
+      border-right: 1px solid var(--line);
+      color: var(--muted);
+      font: 12px/1 "SFMono-Regular", Consolas, monospace;
+      text-align: center;
+    }
+    .division-strip span:last-child { border-right: 0; }
+    .division-strip .default { color: var(--hot); background: rgba(155, 231, 214, .055); }
+
+    .formula {
+      margin: 34px 0 0;
+      padding: 24px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--hot);
+      font: clamp(15px, 2.2vw, 23px)/1.5 "SFMono-Regular", Consolas, monospace;
+    }
+    .formula small { display: block; margin-top: 9px; color: var(--muted); font: 12px/1.5 Inter, sans-serif; }
+
+    .contract-table, .event-table {
+      width: 100%;
+      border-collapse: collapse;
+      border-top: 1px solid var(--line);
+    }
+    .contract-table th, .contract-table td,
+    .event-table th, .event-table td {
+      padding: 20px 18px 20px 0;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    .contract-table th, .event-table th {
+      color: var(--foam);
+      font-size: 10px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .contract-table td:first-child { width: 21%; color: var(--hot); }
+    .contract-table td:nth-child(2) { width: 55%; }
+    .contract-table td:last-child { color: var(--muted); font-size: 13px; }
+    .event-table td:first-child { width: 20%; color: var(--hot); }
+    .event-table td:nth-child(2) { width: 23%; color: var(--muted); }
+    .event-table td:last-child { color: #c5d6d1; }
+
+    .grid-end {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      margin-top: 44px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .grid-end > div { padding: 30px 34px 32px 0; }
+    .grid-end > div + div { padding-left: 34px; border-left: 1px solid var(--line); }
+    .grid-end p { margin-top: 10px; color: var(--muted); }
+    .binary { color: var(--coral); font: 12px "SFMono-Regular", Consolas, monospace; }
+
+    .steps { counter-reset: step; border-top: 1px solid var(--line); }
+    .step {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 74px 220px minmax(0, 1fr);
+      gap: 28px;
+      padding: 28px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .step::before {
+      content: "0" counter(step);
+      color: var(--foam);
+      font: 11px "SFMono-Regular", Consolas, monospace;
+    }
+    .step p { color: var(--muted); }
+    .step code { color: var(--hot); font-size: 12px; }
+
+    .tests {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      border-top: 1px solid var(--line);
+    }
+    .test {
+      min-height: 190px;
+      padding: 28px 32px 30px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .test:nth-child(odd) { border-right: 1px solid var(--line); }
+    .test:nth-child(even) { padding-left: 32px; }
+    .test p { margin-top: 11px; color: var(--muted); }
+
+    .open-section {
+      max-width: none;
+      padding-left: max(28px, calc((100vw - var(--measure)) / 2));
+      padding-right: max(28px, calc((100vw - var(--measure)) / 2));
+      background: #100d0a;
+    }
+    .open-section .section-head { max-width: var(--measure); }
+    .ambiguities { max-width: var(--measure); border-top: 1px solid rgba(255, 138, 115, .34); }
+    details { border-bottom: 1px solid rgba(255, 138, 115, .24); }
+    summary {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr) auto;
+      gap: 26px;
+      align-items: center;
+      padding: 26px 0;
+      cursor: pointer;
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; color: var(--coral); font-size: 22px; }
+    details[open] summary::after { content: "−"; }
+    .issue-number { color: var(--coral); font: 11px "SFMono-Regular", Consolas, monospace; }
+    summary strong { font: 400 24px/1.2 Georgia, "Times New Roman", serif; }
+    .issue-body {
+      max-width: 770px;
+      margin-left: 98px;
+      padding: 0 0 30px;
+      color: var(--muted);
+    }
+    .issue-body b { color: var(--hot); font-weight: 550; }
+    .recommendation { margin-top: 12px; color: #e4d2c7; }
+
+    .non-goals {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border-top: 1px solid var(--line);
+    }
+    .non-goal { padding: 24px 26px 26px 0; border-bottom: 1px solid var(--line); color: var(--muted); }
+    .non-goal:not(:nth-child(3n)) { border-right: 1px solid var(--line); }
+    .non-goal:not(:nth-child(3n+1)) { padding-left: 26px; }
+    .non-goal b { display: block; margin-bottom: 8px; color: var(--ink); font-weight: 550; }
+
+    footer {
+      max-width: var(--measure);
+      margin: 0 auto;
+      padding: 34px 28px 52px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      color: var(--dim);
+      font: 10px/1.5 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+    @keyframes drift-field { from { transform: rotate(-9deg) translateY(-8px); } to { transform: rotate(-7deg) translateY(16px); } }
+
+    @media (max-width: 820px) {
+      .masthead nav { display: none; }
+      .hero { min-height: 78svh; }
+      .phase-field { left: 24%; opacity: .42; }
+      .section-head { grid-template-columns: 1fr; gap: 14px; }
+      .scope, .grid-end, .tests { grid-template-columns: 1fr; }
+      .scope > div:nth-child(odd), .test:nth-child(odd) { border-right: 0; }
+      .scope > div:nth-child(even), .grid-end > div + div, .test:nth-child(even) { padding-left: 0; }
+      .grid-end > div + div { border-left: 0; border-top: 1px solid var(--line); }
+      .division-strip { grid-template-columns: repeat(3, 1fr); }
+      .division-strip span:nth-child(3n) { border-right: 0; }
+      .step { grid-template-columns: 48px 1fr; }
+      .step p { grid-column: 2; }
+      .contract-table th:nth-child(3), .contract-table td:nth-child(3) { display: none; }
+      .contract-table td:first-child { width: 30%; }
+      .event-table th:nth-child(2), .event-table td:nth-child(2) { display: none; }
+      summary { grid-template-columns: 46px minmax(0, 1fr) auto; gap: 12px; }
+      .issue-body { margin-left: 58px; }
+      .non-goals { grid-template-columns: 1fr; }
+      .non-goal { border-right: 0 !important; padding-left: 0 !important; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="wordmark">TIDES / SYNC MODE</div>
+    <nav aria-label="Plan sections">
+      <a href="#contract">Contract</a>
+      <a href="#events">Events</a>
+      <a href="#build">Build</a>
+      <a href="#tests">Tests</a>
+      <a href="#open">Open decisions</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <div class="phase-field" aria-hidden="true"></div>
+    <div class="hero-copy">
+      <div class="eyebrow">Scope-locked integration plan · 22 July 2026</div>
+      <h1>Rhythm, without flattening the tide.</h1>
+      <p class="lede">Add one host-synchronized mode to the existing granulator. Keep the live source motion, layer coherent Tide-selected moments, and let Drift turn unison into a controlled rhythmic wake.</p>
+      <div class="status-line">
+        <span><b>Free mode preserved</b></span>
+        <span><b>64 voices maximum</b></span>
+        <span class="open"><b>4 decisions remain</b></span>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <section id="scope">
+      <div class="section-head">
+        <div class="section-kicker">00 / Boundary</div>
+        <h2>One additional scheduler. No second effect.</h2>
+      </div>
+      <div class="scope">
+        <div>
+          <h3>Add</h3>
+          <p>A binary Sync mode, one discrete rhythmic-division parameter, one binary Grid End parameter, host PPQ/BPM plumbing, and a persistent-lane scheduler inside the existing grain engine.</p>
+        </div>
+        <div>
+          <h3>Preserve</h3>
+          <p>Free mode, rolling live history, Tide source distribution, Shape, Spread, Feedback, Mix, output safety, telemetry, and the fixed 64-grain pool.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="contract">
+      <div class="section-head">
+        <div class="section-kicker">01 / Contract</div>
+        <h2>The rhythm changes. The source character does not.</h2>
+      </div>
+
+      <div class="division-strip" aria-label="Available synchronized divisions">
+        <span>1/32</span><span>1/32.</span><span>1/16</span><span>1/16.</span><span class="default">1/8 · default</span><span>1/8.</span><span>1/4</span><span>1/4.</span><span>1/2</span>
+      </div>
+
+      <div class="formula">
+        offset(i) = duration × 0.20 × Drift × i / (N − 1)
+        <small>For N = 1, offset is always zero. At maximum Drift, lanes are evenly distributed from the boundary through the first 20% of the selected duration.</small>
+      </div>
+
+      <table class="contract-table">
+        <thead><tr><th>Area</th><th>Locked behavior</th><th>Boundary</th></tr></thead>
+        <tbody>
+          <tr><td>Mode</td><td>Sync is additional and defaults off. Free retains its current millisecond Size behavior and existing Drift behavior.</td><td>No Free-mode DSP redesign.</td></tr>
+          <tr><td>Clock</td><td>DAW/host clock only. Valid BPM and PPQ are required; there is no internal tempo fallback.</td><td>No valid clock means no new Sync grains.</td></tr>
+          <tr><td>Size control</td><td>The same visible Size position shows milliseconds in Free and the separate nine-value rhythmic division in Sync. Sync division defaults to 1/8 and retains its own state.</td><td>Do not overload the released millisecond parameter.</td></tr>
+          <tr><td>Lanes</td><td>Density is the number of persistent rhythmic lanes, from 1–64. Every lane has a stable rank and re-articulates on its phase.</td><td>No disposable cohort and no expanded pool.</td></tr>
+          <tr><td>Source capture</td><td>At every global boundary, Tide chooses one fresh, coherent set of source anchors from the live rolling buffer and assigns one to each lane.</td><td>Delayed lanes retain that assigned anchor until onset.</td></tr>
+          <tr><td>Tide</td><td>Tide remains the only control that decides where the cycle samples: low is tightly clustered behind the leader; high spreads farther through the existing wake.</td><td>Preserve current recognizability and ordering.</td></tr>
+          <tr><td>Drift</td><td>In Sync only, Drift controls onset offsets and nothing else. It adds no extra source reach, timbre choice, playback-speed change, lifetime jitter, or random timing.</td><td>Free Drift remains unchanged.</td></tr>
+          <tr><td>Spread</td><td>Unchanged. Zero preserves sampled stereo placement; maximum independently moves grains anywhere from their original position toward fully left or right.</td><td>Refresh as existing grain behavior does.</td></tr>
+          <tr><td>Tempo</td><td>Lane periods and envelope progress live in musical beat/PPQ space. Tempo automation changes real-time duration without pitch-shifting or changing source playback speed.</td><td>Stay rhythmically aligned through tempo changes.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="grid-end">
+        <div>
+          <span class="binary">GRID END = 1 · DEFAULT</span>
+          <h3>Shared ending</h3>
+          <p>Lane <span class="mono">i</span> begins at <span class="mono">boundary + offset(i)</span> and ends at the next shared global boundary. Its audible lifetime is <span class="mono">duration − offset(i)</span>.</p>
+        </div>
+        <div>
+          <span class="binary">GRID END = 0</span>
+          <h3>Full tail</h3>
+          <p>Every lane receives the full selected duration, even when delayed. It crosses the next global boundary, re-articulates at the same phase one duration later, and never overlaps itself.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="events">
+      <div class="section-head">
+        <div class="section-kicker">02 / Events</div>
+        <h2>Every automated change has one defined commit point.</h2>
+      </div>
+      <table class="event-table">
+        <thead><tr><th>Event</th><th>Commit point</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Enable Sync</td><td>Next canonical boundary of selected division</td><td>Stop Free births immediately; at the boundary, safety-fade remaining Free tails and launch the synchronized layout.</td></tr>
+          <tr><td>Disable Sync</td><td>Next current Sync boundary</td><td>Safety-fade Sync lanes, reset the Free scheduler, and resume Free births there. Never run both schedulers as a blended mode.</td></tr>
+          <tr><td>Division change</td><td>Next boundary of the old/current division</td><td>That boundary becomes the new division’s phase origin. This is the deliberate syncopation seam; do not snap the change to the new division’s canonical host grid.</td></tr>
+          <tr><td>Division + full tail</td><td>First new onset for each lane</td><td>The new schedule is authoritative. A still-running old grain ends at its lane’s new onset; a grain that already ended leaves a short gap. No bridge grain.</td></tr>
+          <tr><td>Density change</td><td>Next global Sync boundary</td><td>Recalculate the evenly spaced layout. Added lanes enter at their offsets; removed full-tail lanes may finish naturally but receive no new articulation.</td></tr>
+          <tr><td>Drift + Grid End on</td><td>Next global Sync boundary</td><td>Jump directly to the newly interpolated onset layout. User automation provides any desired gradual migration.</td></tr>
+          <tr><td>Drift + Grid End off</td><td>One-cycle formation latency</td><td>Each lane uses one interval of <span class="mono">duration + newOffset − oldOffset</span>, then resumes the exact selected duration at its new phase. Automation intended for a given cycle must be placed one cycle earlier.</td></tr>
+          <tr><td>Grid End change</td><td>Next global Sync boundary</td><td>Binary parameter only: exactly 0 or 1. Turning it on fades cross-boundary tails there; turning it off gives new articulations their full duration.</td></tr>
+          <tr><td>Transport stop</td><td>Immediate scheduling stop</td><td>No new grains. Existing grains may complete. On resume, wait for the next canonical boundary of the selected division.</td></tr>
+          <tr><td>Start / seek / loop wrap</td><td>Host discontinuity</td><td>Clear active grains and stale rolling history, re-anchor to the selected division’s canonical PPQ grid, and wait for its next boundary. Starting halfway through an eighth waits one sixteenth.</td></tr>
+          <tr><td>Clock unavailable</td><td>Immediate</td><td>Do not schedule Sync grains; report waiting for host clock. Free mode remains usable outside a host.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="build">
+      <div class="section-head">
+        <div class="section-kicker">03 / Build</div>
+        <h2>A narrow five-step vertical slice.</h2>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <h3>Parameters + host snapshot</h3>
+          <p>Add stable APVTS IDs for <code>sync</code>, <code>syncDivision</code>, and <code>gridEnd</code>. Read BPM, PPQ, play state, and discontinuities in the processor; pass a small plain timing snapshot into DSP. Keep all work bounded and allocation-free.</p>
+        </div>
+        <div class="step">
+          <h3>Persistent Sync lanes</h3>
+          <p>Add a Sync scheduler alongside the existing Free scheduler in <code>GranulatorEngine</code>. Reuse the same fixed 64-grain storage, history reader, Shape, Spread, feedback path, wet normalization, telemetry, and limiter.</p>
+        </div>
+        <div class="step">
+          <h3>Boundary state machine</h3>
+          <p>Implement phase origin, cycle snapshots, division/density/drift/Grid End commits, full-tail re-articulation, mode handoffs, tempo-following envelope phase, and transport resets as explicit states—not ad hoc parameter branches.</p>
+        </div>
+        <div class="step">
+          <h3>Minimal editor seam</h3>
+          <p>Add one binary Sync control, switch the visible Size readout between milliseconds and musical divisions, add the binary Grid End control beside Drift, and expose the waiting/latency information chosen below. Do not redesign the visualizer.</p>
+        </div>
+        <div class="step">
+          <h3>Regression ladder</h3>
+          <p>Run focused scheduler/parameter/state tests, the full CTest suite, Debug and Release builds, sanitizer coverage for dense automation, then VST3/Standalone validation. DAW listening remains a separate subjective check.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="tests">
+      <div class="section-head">
+        <div class="section-kicker">04 / Acceptance</div>
+        <h2>Prove timing, population, continuity, and preservation.</h2>
+      </div>
+      <div class="tests">
+        <div class="test"><h3>Division timing</h3><p>All nine divisions and dotted ratios land sample-accurately across 1, 17, 64, changing, and non-power-of-two block sizes.</p></div>
+        <div class="test"><h3>Lane geometry</h3><p>Density 1 and 64, Drift 0 and 1, exact first/last offsets, even interpolation, stable lane identity, and never more than 64 active grains.</p></div>
+        <div class="test"><h3>Source ownership</h3><p>One Tide-selected set per boundary; delayed lanes use their assigned anchors. Sync Drift produces no source-offset or playback-speed delta.</p></div>
+        <div class="test"><h3>Grid End</h3><p>On: every lane reaches silence at the shared boundary. Off: every lane lasts one full musical duration, crosses boundaries, and never overlaps itself.</p></div>
+        <div class="test"><h3>Automation</h3><p>Division, Density, Drift, and Grid End commit at their specified boundaries; full-tail division changes cut/re-articulate without duplicates; Drift exhibits exactly one cycle of formation latency.</p></div>
+        <div class="test"><h3>Transport + tempo</h3><p>Start, stop, resume, seek, loop wrap, tempo ramp, missing BPM/PPQ, and starting halfway through a division all follow the locked host rules.</p></div>
+        <div class="test"><h3>State + UI</h3><p>Defaults and round-trip state: Sync 0, division 1/8, Grid End 1. Attachments reflect automation and mode-dependent Size display without changing the Free Size value.</p></div>
+        <div class="test"><h3>Existing sound</h3><p>Free-mode renders remain unchanged. Tide range, Shape, Spread, Feedback, Mix, output ceiling, non-finite containment, and telemetry continue to pass their existing contracts.</p></div>
+      </div>
+    </section>
+
+    <section id="open" class="open-section">
+      <div class="section-head">
+        <div class="section-kicker" style="color: var(--coral)">05 / Before code</div>
+        <h2>Four decisions remain. Only one changes DSP.</h2>
+      </div>
+      <div class="ambiguities">
+        <details open>
+          <summary><span class="issue-number">01 · DSP</span><strong>What does Shape do when Grid End shortens a delayed grain?</strong></summary>
+          <div class="issue-body">Choose between <b>compressing the complete Shape envelope</b> into <span class="mono">duration − offset</span>, or running the normal full-duration envelope and truncating/fading it at the boundary. <p class="recommendation">Recommendation: compress the complete envelope so every lane reaches its designed zero cleanly and Shape remains meaningful.</p></div>
+        </details>
+        <details>
+          <summary><span class="issue-number">02 · COPY</span><strong>Is “Grid End” the final user-facing name?</strong></summary>
+          <div class="issue-body">The behavior is locked; only the concise label remains. Alternatives include <b>Grid End</b>, <b>End at Grid</b>, or <b>Cut at Grid</b>. <p class="recommendation">Recommendation: “Grid End” is shortest and already established in this plan.</p></div>
+        </details>
+        <details>
+          <summary><span class="issue-number">03 · UI</span><strong>What remains visible while Sync is off?</strong></summary>
+          <div class="issue-body">The Size position must return to milliseconds. Decide whether Grid End is hidden or remains visible but disabled; the saved Sync division itself is necessarily hidden behind the Free Size display. <p class="recommendation">Recommendation: keep Grid End in place but dim and disable it, avoiding layout movement and showing that it belongs to Sync.</p></div>
+        </details>
+        <details>
+          <summary><span class="issue-number">04 · STATUS</span><strong>How much timing guidance belongs in the compact editor?</strong></summary>
+          <div class="issue-body">Two messages are required in principle: no valid clock, and the one-cycle Drift latency with Grid End off. Decide between a persistent micro-status line or tooltips only. <p class="recommendation">Recommendation: a single small contextual line—“WAITING FOR HOST CLOCK” when unavailable; “FULL TAIL · DRIFT LANDS NEXT CYCLE” only while relevant.</p></div>
+        </details>
+      </div>
+    </section>
+
+    <section id="non-goals">
+      <div class="section-head">
+        <div class="section-kicker">06 / Non-goals</div>
+        <h2>Explicitly outside this integration.</h2>
+      </div>
+      <div class="non-goals">
+        <div class="non-goal"><b>No internal BPM</b>No tap tempo, standalone clock, MIDI clock, or fallback transport.</div>
+        <div class="non-goal"><b>No more divisions</b>No triplets, custom ratios, groove templates, or swing control.</div>
+        <div class="non-goal"><b>No new sound dimensions</b>No pitch control, new source randomization, freeze, or extra Drift timbre behavior.</div>
+        <div class="non-goal"><b>No enlarged voice pool</b>No transition voices, self-overlap, or 127-grain workaround.</div>
+        <div class="non-goal"><b>No Free redesign</b>No change to Free Size, scheduler, Drift character, or existing parameter IDs.</div>
+        <div class="non-goal"><b>No visualizer rewrite</b>Only the controls and concise state communication required for Sync.</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>TIDES · Sync Mode Integration Plan</span>
+    <span>Planning artifact only · no DSP changes made</span>
+  </footer>
+</body>
+</html>

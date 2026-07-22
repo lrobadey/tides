@@ -1,0 +1,551 @@
+#include "GranulatorEngine.h"
+
+#include <algorithm>
+#include <cmath>
+
+namespace tide
+{
+namespace
+{
+constexpr float baseSafetyMarginSeconds = 0.010f;
+constexpr float minimumGrainSeconds = 0.005f;
+constexpr float maximumGrainSeconds = 1.000f;
+constexpr float minimumTimeSeconds = 0.020f;
+constexpr float maximumTimeSeconds = 5.0f;
+constexpr float maximumSpeedDeviation = 0.01f;
+constexpr float maximumLifetimeVariation = 0.15f;
+constexpr float maximumBirthJitter = 0.15f;
+constexpr float minimumTrailProportion = 0.015f;
+constexpr float maximumTrailProportion = 0.55f;
+constexpr float maximumSourceDriftSeconds = 0.020f;
+constexpr float maximumSourceDriftWindowProportion = 0.02f;
+constexpr float goldenRatioConjugate = 0.61803398875f;
+constexpr double schedulerEpsilon = 1.0e-9;
+
+float smoothStep(const float value) noexcept
+{
+    const auto clamped = juce::jlimit(0.0f, 1.0f, value);
+    return clamped * clamped * (3.0f - 2.0f * clamped);
+}
+
+// sin(pi * phase) for phase in [0, 1], precomputed once. This term is evaluated
+// once per active grain per sample in the audio loop; the table trades a libm
+// transcendental for a lerp'd lookup with error below 5e-7 versus std::sin.
+struct HalfSineTable
+{
+    static constexpr int resolution = 2048;
+    std::array<float, resolution + 1> values {};
+
+    HalfSineTable() noexcept
+    {
+        for (auto index = 0; index <= resolution; ++index)
+            values[static_cast<size_t>(index)] = std::sin(
+                juce::MathConstants<float>::pi
+                * (static_cast<float>(index) / static_cast<float>(resolution)));
+    }
+};
+
+const HalfSineTable halfSineTable;
+
+float halfSine(const float phase) noexcept
+{
+    const auto scaled = juce::jlimit(0.0f, 1.0f, phase)
+        * static_cast<float>(HalfSineTable::resolution);
+    const auto lowerIndex = juce::jmin(static_cast<int>(scaled),
+                                       HalfSineTable::resolution - 1);
+    const auto fraction = scaled - static_cast<float>(lowerIndex);
+    const auto lower = halfSineTable.values[static_cast<size_t>(lowerIndex)];
+    const auto upper = halfSineTable.values[static_cast<size_t>(lowerIndex) + 1];
+    return lower + fraction * (upper - lower);
+}
+}
+
+void GranulatorEngine::prepare(const double sampleRate,
+                               const int maximumBlockSize,
+                               const int channelCount,
+                               const float initialMix,
+                               const float initialFeedback,
+                               const float initialTide,
+                               const float initialDrift)
+{
+    juce::ignoreUnused(maximumBlockSize);
+
+    currentSampleRate = juce::jmax(1.0, sampleRate);
+    currentChannelCount = std::clamp(channelCount, 1, 2);
+    historyLength = static_cast<int>(std::ceil(5.0 * currentSampleRate)) + 2;
+
+    history.setSize(currentChannelCount, historyLength, false, true, false);
+    mixSmoother.reset(currentSampleRate, 0.02);
+    mixSmoother.setCurrentAndTargetValue(juce::jlimit(0.0f, 1.0f, initialMix));
+    feedbackSmoother.reset(currentSampleRate, 0.02);
+    feedbackSmoother.setCurrentAndTargetValue(juce::jlimit(0.0f, 0.95f, initialFeedback));
+    tideSmoother.reset(currentSampleRate, 0.08);
+    tideSmoother.setCurrentAndTargetValue(juce::jlimit(0.0f, 1.0f, initialTide));
+    driftSmoother.reset(currentSampleRate, 0.08);
+    driftSmoother.setCurrentAndTargetValue(juce::jlimit(0.0f, 1.0f, initialDrift));
+
+    normalizationAttack = static_cast<float>(
+        1.0 - std::exp(-1.0 / (currentSampleRate * 0.020)));
+    normalizationRelease = static_cast<float>(
+        1.0 - std::exp(-1.0 / (currentSampleRate * 0.180)));
+
+    reset();
+}
+
+void GranulatorEngine::reset() noexcept
+{
+    history.clear();
+    resetHistory(0);
+}
+
+void GranulatorEngine::resetHistory(const std::int64_t newTimelineSample) noexcept
+{
+    resetPlayback(newTimelineSample);
+    writePosition = 0;
+    totalSamplesWritten = 0;
+}
+
+void GranulatorEngine::resetPlayback(const std::int64_t newTimelineSample) noexcept
+{
+    for (auto& grain : grains)
+        grain = {};
+
+    timelineSample = newTimelineSample;
+    nextBirthSample = static_cast<double>(newTimelineSample);
+    nominalWetNormalization = 1.0f;
+    activeGrainCount = 0;
+    targetPopulation = 0;
+    birthOrdinal = 0;
+}
+
+void GranulatorEngine::setRandomSeed(const std::uint64_t seed) noexcept
+{
+    randomSeed = seed;
+}
+
+void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
+                               const Controls& controls,
+                               float* internalHistoryTap,
+                               const int internalHistoryTapCapacity) noexcept
+{
+    jassert(currentSampleRate > 0.0);
+    jassert(historyLength > 0);
+
+    const auto channelsToProcess = std::min(buffer.getNumChannels(), currentChannelCount);
+    if (channelsToProcess <= 0 || buffer.getNumSamples() <= 0)
+        return;
+
+    if (internalHistoryTapCapacity < buffer.getNumSamples())
+        internalHistoryTap = nullptr;
+
+    std::array<float*, 2> outputChannels {};
+    std::array<float*, 2> historyChannels {};
+    for (auto channel = 0; channel < channelsToProcess; ++channel)
+    {
+        outputChannels[static_cast<size_t>(channel)] = buffer.getWritePointer(channel);
+        historyChannels[static_cast<size_t>(channel)] = history.getWritePointer(channel);
+    }
+
+    mixSmoother.setTargetValue(juce::jlimit(0.0f, 1.0f, controls.mix));
+    feedbackSmoother.setTargetValue(juce::jlimit(0.0f, 0.95f, controls.feedback));
+    tideSmoother.setTargetValue(juce::jlimit(0.0f, 1.0f, controls.tide));
+    driftSmoother.setTargetValue(juce::jlimit(0.0f, 1.0f, controls.drift));
+    reconcilePopulation(controls);
+
+    for (auto sample = 0; sample < buffer.getNumSamples(); ++sample)
+    {
+        std::array<float, 2> dry {};
+        std::array<float, 2> wet {};
+        auto envelopeAmplitude = 0.0f;
+        auto expectedEnvelopeMass = 0.0f;
+        auto averageBirthTide = 0.0f;
+        auto readablePopulation = 0;
+
+        for (auto channel = 0; channel < channelsToProcess; ++channel)
+        {
+            dry[static_cast<size_t>(channel)] =
+                outputChannels[static_cast<size_t>(channel)][sample];
+            historyChannels[static_cast<size_t>(channel)][writePosition] =
+                dry[static_cast<size_t>(channel)];
+        }
+
+        const auto tide = tideSmoother.getNextValue();
+        const auto drift = driftSmoother.getNextValue();
+        scheduleBirths(controls, tide, drift);
+
+        for (auto& grain : grains)
+        {
+            if (! grain.active)
+                continue;
+
+            const auto phase = static_cast<float>(grain.ageInSamples) * grain.phaseScale;
+            const auto envelope = grainEnvelope(phase, grain.shapeAtBirth);
+
+            if (grain.hasReadableSource)
+            {
+                envelopeAmplitude += envelope;
+                expectedEnvelopeMass += grain.envelopeMassAtBirth;
+                averageBirthTide += grain.tideAtBirth;
+                ++readablePopulation;
+            }
+
+            if (grain.hasReadableSource && channelsToProcess == 1)
+            {
+                wet[0] += readHistorySample(historyChannels[0], grain.readPosition) * envelope;
+            }
+            else if (grain.hasReadableSource)
+            {
+                const auto left = readHistorySample(historyChannels[0], grain.readPosition);
+                const auto right = readHistorySample(historyChannels[1], grain.readPosition);
+                const auto centredImage = (left + right) * 0.70710678118f;
+                if (grain.pan < 0.0f)
+                {
+                    wet[0] += (left * (1.0f - grain.panAmount)
+                               + centredImage * grain.panAmount) * envelope;
+                    wet[1] += right * (1.0f - grain.panAmount) * envelope;
+                }
+                else
+                {
+                    wet[0] += left * (1.0f - grain.panAmount) * envelope;
+                    wet[1] += (right * (1.0f - grain.panAmount)
+                               + centredImage * grain.panAmount) * envelope;
+                }
+            }
+
+            if (grain.hasReadableSource)
+            {
+                grain.readPosition += grain.playbackSpeed;
+                while (grain.readPosition >= static_cast<double>(historyLength))
+                    grain.readPosition -= static_cast<double>(historyLength);
+            }
+
+            ++grain.ageInSamples;
+            if (grain.ageInSamples >= grain.lengthInSamples)
+            {
+                grain.active = false;
+                grain.hasReadableSource = false;
+                --activeGrainCount;
+            }
+        }
+
+        // Independent one-shots should overlap into a mostly steady field. Low
+        // Tide remains source-coherent and uses conservative linear gain, while
+        // high Tide moves toward energy normalisation as birth anchors spread.
+        const auto meanBirthTide = readablePopulation > 0
+            ? averageBirthTide / static_cast<float>(readablePopulation)
+            : tide;
+        const auto linearNormalization = juce::jmax(1.0f, expectedEnvelopeMass);
+        const auto energyNormalization = std::sqrt(linearNormalization);
+        const auto targetNormalization = linearNormalization
+            + (energyNormalization - linearNormalization) * smoothStep(meanBirthTide);
+        const auto normalizationFollow = targetNormalization > nominalWetNormalization
+            ? normalizationAttack
+            : normalizationRelease;
+        nominalWetNormalization += (targetNormalization - nominalWetNormalization)
+            * normalizationFollow;
+
+        const auto feedbackCompensation = 1.0f / juce::jmax(1.0f, envelopeAmplitude);
+        const auto mix = mixSmoother.getNextValue();
+        const auto feedback = feedbackSmoother.getNextValue();
+        const auto dryGain = std::cos(juce::MathConstants<float>::halfPi * mix);
+        const auto wetGain = std::sin(juce::MathConstants<float>::halfPi * mix);
+        auto internalHistoryMono = 0.0f;
+        for (auto channel = 0; channel < channelsToProcess; ++channel)
+        {
+            const auto audibleWet = wet[static_cast<size_t>(channel)]
+                / juce::jmax(1.0f, nominalWetNormalization);
+            const auto feedbackSignal = juce::jlimit(
+                -1.0f,
+                1.0f,
+                wet[static_cast<size_t>(channel)] * feedbackCompensation);
+            const auto storedSource = dry[static_cast<size_t>(channel)]
+                + feedbackSignal * feedback;
+            historyChannels[static_cast<size_t>(channel)][writePosition] = storedSource;
+            internalHistoryMono += storedSource;
+            outputChannels[static_cast<size_t>(channel)][sample] =
+                dry[static_cast<size_t>(channel)] * dryGain
+                + audibleWet * wetGain;
+        }
+
+        if (internalHistoryTap != nullptr)
+            internalHistoryTap[sample] = internalHistoryMono
+                / static_cast<float>(channelsToProcess);
+
+        if (++writePosition >= historyLength)
+            writePosition = 0;
+        ++totalSamplesWritten;
+        ++timelineSample;
+    }
+}
+
+void GranulatorEngine::getVisualFrame(VisualFrame& destination) const noexcept
+{
+    destination.totalSamplesWritten = totalSamplesWritten;
+    destination.sampleRate = currentSampleRate;
+    destination.grainCount = 0;
+
+    for (const auto& grain : grains)
+    {
+        if (! grain.active || ! grain.hasReadableSource)
+            continue;
+
+        auto sourceDelay = static_cast<double>(writePosition) - grain.readPosition;
+        while (sourceDelay < 0.0)
+            sourceDelay += static_cast<double>(historyLength);
+        while (sourceDelay >= static_cast<double>(historyLength))
+            sourceDelay -= static_cast<double>(historyLength);
+
+        const auto denominator = juce::jmax(1, grain.lengthInSamples - 1);
+        const auto phase = static_cast<float>(grain.ageInSamples)
+            / static_cast<float>(denominator);
+        destination.grains[static_cast<size_t>(destination.grainCount++)] = {
+            grain.eventId,
+            sourceDelay,
+            grain.playbackSpeed,
+            grainEnvelope(phase, grain.shapeAtBirth),
+            grain.pan,
+            grain.ageInSamples,
+            grain.lengthInSamples
+        };
+    }
+}
+
+void GranulatorEngine::reconcilePopulation(const Controls& controls) noexcept
+{
+    const auto requestedCount = juce::jlimit(
+        1,
+        maximumGrains,
+        static_cast<int>(std::round(controls.density)));
+
+    if (requestedCount > targetPopulation)
+        nextBirthSample = static_cast<double>(timelineSample);
+
+    // A decrease never cuts live events. Births remain suppressed until their
+    // natural releases bring the sounding population down to the new target.
+    targetPopulation = requestedCount;
+}
+
+void GranulatorEngine::scheduleBirths(const Controls& controls,
+                                      const float tide,
+                                      const float drift) noexcept
+{
+    auto attempts = 0;
+    while (activeGrainCount < targetPopulation
+           && nextBirthSample <= static_cast<double>(timelineSample) + schedulerEpsilon
+           && attempts < maximumGrains)
+    {
+        Grain* freeGrain = nullptr;
+        for (auto& grain : grains)
+        {
+            if (! grain.active)
+            {
+                freeGrain = &grain;
+                break;
+            }
+        }
+
+        if (freeGrain == nullptr)
+            break;
+
+        if (! beginOneShot(*freeGrain, controls, tide, drift))
+        {
+            nextBirthSample = static_cast<double>(timelineSample + 1);
+            break;
+        }
+
+        ++activeGrainCount;
+        nextBirthSample += nextBirthInterval(*freeGrain, controls, drift);
+        ++attempts;
+    }
+}
+
+bool GranulatorEngine::beginOneShot(Grain& grain,
+                                    const Controls& controls,
+                                    const float tide,
+                                    const float drift) noexcept
+{
+    const auto eventId = birthOrdinal;
+    const auto eventStream = eventId * 17ULL;
+    const auto clampedDrift = juce::jlimit(0.0f, 1.0f, drift);
+    const auto nominalLength = requestedLengthInSamples(controls);
+    const auto lifetimeOffset = (randomUnit(timelineSample, eventStream + 1ULL) * 2.0f - 1.0f)
+        * maximumLifetimeVariation * clampedDrift;
+    const auto minimumLength = juce::jmax(
+        2,
+        static_cast<int>(std::round(minimumGrainSeconds * currentSampleRate)));
+    const auto maximumLength = juce::jmax(
+        minimumLength,
+        static_cast<int>(std::round(maximumGrainSeconds * currentSampleRate)));
+    const auto length = juce::jlimit(
+        minimumLength,
+        maximumLength,
+        static_cast<int>(std::round(static_cast<float>(nominalLength)
+                                    * (1.0f + lifetimeOffset))));
+
+    const auto playbackOffset = (randomUnit(timelineSample, eventStream + 2ULL) * 2.0f - 1.0f)
+        * maximumSpeedDeviation * clampedDrift;
+    const auto playbackSpeed = 1.0 + static_cast<double>(playbackOffset);
+    const auto activeWindowSeconds = juce::jlimit(minimumTimeSeconds,
+                                                  maximumTimeSeconds,
+                                                  controls.timeSeconds);
+    const auto activeWindowSamples = juce::jmax<std::int64_t>(
+        1,
+        static_cast<std::int64_t>(std::round(activeWindowSeconds * currentSampleRate)));
+    const auto availableWindow = juce::jmin<std::int64_t>(activeWindowSamples,
+                                                          totalSamplesWritten);
+    const auto baseSafetySamples = static_cast<double>(std::round(baseSafetyMarginSeconds
+                                                                   * currentSampleRate));
+    const auto requiredSafety = juce::jmax(baseSafetySamples,
+                                           (playbackSpeed - 1.0)
+                                               * static_cast<double>(length)
+                                               + baseSafetySamples);
+    if (availableWindow <= static_cast<std::int64_t>(std::ceil(requiredSafety)))
+        return false;
+
+    const auto minimumDelay = static_cast<float>(std::ceil(requiredSafety));
+    const auto safeSpan = juce::jmax(
+        1.0f,
+        static_cast<float>(availableWindow) - minimumDelay);
+    const auto elapsedSeconds = static_cast<double>(timelineSample) / currentSampleRate;
+
+    // The centroid is a moving point in source memory, not an amplitude clock.
+    // New births sample behind it; existing grains never have their anchor moved.
+    const auto centroidFraction = juce::jlimit(
+        0.06f,
+        0.22f,
+        0.12f
+            + 0.055f * std::sin(static_cast<float>(elapsedSeconds * 0.37))
+            + 0.025f * std::sin(static_cast<float>(elapsedSeconds * 0.113 + 1.7)));
+    const auto centroidDelay = minimumDelay + safeSpan * centroidFraction;
+    const auto trailRank = wrappedUnit(
+        (static_cast<float>(eventId) + 0.5f) * goldenRatioConjugate
+        + randomUnit(0, 31ULL));
+    const auto trailProportion = minimumTrailProportion
+        + (maximumTrailProportion - minimumTrailProportion) * smoothStep(tide);
+    const auto trailDelay = safeSpan * trailProportion * trailRank;
+    const auto maximumSourceDrift = juce::jmin(
+        static_cast<float>(currentSampleRate * maximumSourceDriftSeconds),
+        safeSpan * maximumSourceDriftWindowProportion);
+    const auto sourceDrift = (randomUnit(timelineSample, eventStream + 3ULL) * 2.0f - 1.0f)
+        * maximumSourceDrift * clampedDrift;
+    const auto delayInSamples = juce::jlimit(
+        static_cast<double>(minimumDelay),
+        static_cast<double>(availableWindow),
+        static_cast<double>(centroidDelay + trailDelay + sourceDrift));
+
+    grain = {};
+    grain.active = true;
+    grain.hasReadableSource = true;
+    grain.birthSample = timelineSample;
+    grain.eventId = eventId;
+    grain.lengthInSamples = length;
+    grain.phaseScale = 1.0f / static_cast<float>(juce::jmax(1, length - 1));
+    grain.shapeAtBirth = juce::jlimit(0.0f, 1.0f, controls.shape);
+    grain.envelopeMassAtBirth = 0.5f
+        + grain.shapeAtBirth * (2.0f / juce::MathConstants<float>::pi - 0.5f);
+    grain.tideAtBirth = juce::jlimit(0.0f, 1.0f, tide);
+    grain.playbackSpeed = playbackSpeed;
+    grain.sourceDelaySamples = delayInSamples;
+    grain.readPosition = static_cast<double>(writePosition) - delayInSamples;
+    while (grain.readPosition < 0.0)
+        grain.readPosition += static_cast<double>(historyLength);
+
+    const auto panIdentity = randomUnit(timelineSample, eventStream + 4ULL) * 2.0f - 1.0f;
+    const auto panDrift = (randomUnit(timelineSample, eventStream + 5ULL) * 2.0f - 1.0f)
+        * clampedDrift * 0.2f;
+    grain.pan = juce::jlimit(-1.0f, 1.0f, panIdentity * 0.8f + panDrift)
+        * juce::jlimit(0.0f, 1.0f, controls.spread);
+    grain.panAmount = std::sin(juce::MathConstants<float>::halfPi
+                              * std::abs(grain.pan));
+
+    ++birthOrdinal;
+    return true;
+}
+
+double GranulatorEngine::nextBirthInterval(const Grain& grain,
+                                           const Controls& controls,
+                                           const float drift) const noexcept
+{
+    const auto nominalInterval = static_cast<double>(requestedLengthInSamples(controls))
+        / static_cast<double>(juce::jmax(1, targetPopulation));
+    const auto eventStream = grain.eventId * 17ULL;
+    const auto jitter = (randomUnit(grain.birthSample, eventStream + 6ULL) * 2.0f - 1.0f)
+        * maximumBirthJitter * juce::jlimit(0.0f, 1.0f, drift);
+    return juce::jmax(0.0625, nominalInterval * (1.0 + static_cast<double>(jitter)));
+}
+
+int GranulatorEngine::requestedLengthInSamples(const Controls& controls) const noexcept
+{
+    const auto lengthSeconds = juce::jlimit(minimumGrainSeconds,
+                                            maximumGrainSeconds,
+                                            controls.grainSizeMilliseconds * 0.001f);
+    return juce::jmax(2,
+                      static_cast<int>(std::round(lengthSeconds * currentSampleRate)));
+}
+
+float GranulatorEngine::randomUnit(const std::int64_t eventSample,
+                                   const std::uint64_t stream) const noexcept
+{
+    const auto mixed = hash(randomSeed
+                            ^ static_cast<std::uint64_t>(eventSample)
+                            ^ (stream * 0x9e3779b97f4a7c15ULL));
+    return static_cast<float>((mixed >> 40) & 0xFFFFFFULL) / static_cast<float>(0x1000000ULL);
+}
+
+std::uint64_t GranulatorEngine::hash(const std::uint64_t value) noexcept
+{
+    auto result = value + 0x9e3779b97f4a7c15ULL;
+    result = (result ^ (result >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    result = (result ^ (result >> 27)) * 0x94d049bb133111ebULL;
+    return result ^ (result >> 31);
+}
+
+float GranulatorEngine::wrappedUnit(const float value) noexcept
+{
+    return value - std::floor(value);
+}
+
+float GranulatorEngine::roundedSawEnvelope(const float phase) noexcept
+{
+    constexpr auto attackEnd = 0.08f;
+    if (phase < attackEnd)
+    {
+        const auto attackPhase = juce::jlimit(0.0f, 1.0f, phase / attackEnd);
+        return attackPhase * attackPhase * (3.0f - 2.0f * attackPhase);
+    }
+
+    const auto decayPhase = juce::jlimit(0.0f, 1.0f, (phase - attackEnd) / (1.0f - attackEnd));
+    const auto remaining = 1.0f - decayPhase;
+    return remaining * remaining * (3.0f - 2.0f * remaining);
+}
+
+float GranulatorEngine::grainEnvelope(const float phase, const float shape) noexcept
+{
+    const auto clampedPhase = juce::jlimit(0.0f, 1.0f, phase);
+    const auto saw = roundedSawEnvelope(clampedPhase);
+    const auto sine = halfSine(clampedPhase);
+    return saw + (sine - saw) * juce::jlimit(0.0f, 1.0f, shape);
+}
+
+float GranulatorEngine::readHistorySample(const float* const channelData,
+                                          const double position) const noexcept
+{
+    auto wrappedPosition = position;
+    while (wrappedPosition < 0.0)
+        wrappedPosition += static_cast<double>(historyLength);
+    while (wrappedPosition >= static_cast<double>(historyLength))
+        wrappedPosition -= static_cast<double>(historyLength);
+
+    const auto firstIndex = static_cast<int>(wrappedPosition);
+    // firstIndex is in [0, historyLength - 1], so the successor wraps at most
+    // once. A conditional subtract avoids an integer divide in the audio loop.
+    auto secondIndex = firstIndex + 1;
+    if (secondIndex >= historyLength)
+        secondIndex = 0;
+    const auto fraction = static_cast<float>(wrappedPosition - static_cast<double>(firstIndex));
+
+    const auto first = channelData[firstIndex];
+    const auto second = channelData[secondIndex];
+    return first + fraction * (second - first);
+}
+} // namespace tide
