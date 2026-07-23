@@ -21,6 +21,7 @@ constexpr float maximumSourceDriftSeconds = 0.020f;
 constexpr float maximumSourceDriftWindowProportion = 0.02f;
 constexpr float goldenRatioConjugate = 0.61803398875f;
 constexpr double schedulerEpsilon = 1.0e-9;
+constexpr double ppqEpsilon = 1.0e-10;
 
 float smoothStep(const float value) noexcept
 {
@@ -116,6 +117,7 @@ void GranulatorEngine::resetPlayback(const std::int64_t newTimelineSample) noexc
     activeGrainCount = 0;
     targetPopulation = 0;
     birthOrdinal = 0;
+    syncState = {};
 }
 
 void GranulatorEngine::setRandomSeed(const std::uint64_t seed) noexcept
@@ -125,6 +127,7 @@ void GranulatorEngine::setRandomSeed(const std::uint64_t seed) noexcept
 
 void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
                                const Controls& controls,
+                               const Timing& timing,
                                float* internalHistoryTap,
                                const int internalHistoryTapCapacity) noexcept
 {
@@ -150,7 +153,44 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
     feedbackSmoother.setTargetValue(juce::jlimit(0.0f, 0.95f, controls.feedback));
     tideSmoother.setTargetValue(juce::jlimit(0.0f, 1.0f, controls.tide));
     driftSmoother.setTargetValue(juce::jlimit(0.0f, 1.0f, controls.drift));
-    reconcilePopulation(controls);
+    const auto validClock = timing.clockValid && std::isfinite(timing.bpm)
+        && timing.bpm > 0.0 && std::isfinite(timing.ppqPosition);
+    const auto ppqPerSample = validClock
+        ? timing.bpm / (60.0 * currentSampleRate)
+        : 0.0;
+
+    if (timing.discontinuity)
+        syncState = {};
+
+    // A boundary commit is unreachable without a running host clock, so a
+    // disable request must hand back to the Free scheduler immediately rather
+    // than stranding it behind a boundary that never arrives.
+    if (syncState.active && ! controls.sync && (! timing.playing || ! validClock))
+    {
+        releaseAllSyncVoices();
+        syncState = {};
+        nextBirthSample = static_cast<double>(timelineSample);
+    }
+
+    if (! controls.sync && ! syncState.active)
+        reconcilePopulation(controls);
+
+    if (controls.sync && timing.playing && ! validClock && syncState.clockWasValid)
+        releaseAllSyncVoices();
+
+    if (controls.sync && timing.playing && validClock && syncState.active
+        && ! syncState.clockWasValid && ! timing.discontinuity)
+    {
+        const auto duration = divisionPpq(controls.syncDivision);
+        syncState.awaitingBoundary = true;
+        syncState.nextBoundaryPpq = (std::floor(timing.ppqPosition / duration) + 1.0)
+            * duration;
+        for (auto& lane : syncState.lanes)
+            lane.onsetPending = false;
+    }
+
+    if (syncState.active)
+        syncState.disabling = ! controls.sync;
 
     for (auto sample = 0; sample < buffer.getNumSamples(); ++sample)
     {
@@ -171,19 +211,32 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
 
         const auto tide = tideSmoother.getNextValue();
         const auto drift = driftSmoother.getNextValue();
-        scheduleBirths(controls, tide, drift);
+        const auto currentPpq = validClock
+            ? timing.ppqPosition + static_cast<double>(sample) * ppqPerSample
+            : timing.ppqPosition;
+        if (controls.sync || syncState.active)
+            processSyncEvents(controls, timing, currentPpq);
+        else
+            scheduleBirths(controls, tide, drift);
 
         for (auto& grain : grains)
         {
             if (! grain.active)
                 continue;
 
-            const auto phase = static_cast<float>(grain.ageInSamples) * grain.phaseScale;
+            const auto phase = grain.syncVoice
+                ? static_cast<float>(grain.lifeProgress)
+                : static_cast<float>(grain.ageInSamples) * grain.phaseScale;
             const auto envelope = grainEnvelope(phase, grain.shapeAtBirth);
+            const auto releaseGain = grain.releaseSamplesRemaining > 0
+                ? static_cast<float>(grain.releaseSamplesRemaining)
+                    / static_cast<float>(juce::jmax(1, grain.releaseSamplesTotal))
+                : 1.0f;
+            const auto renderedEnvelope = envelope * releaseGain;
 
             if (grain.hasReadableSource)
             {
-                envelopeAmplitude += envelope;
+                envelopeAmplitude += renderedEnvelope;
                 expectedEnvelopeMass += grain.envelopeMassAtBirth;
                 averageBirthTide += grain.tideAtBirth;
                 ++readablePopulation;
@@ -191,7 +244,10 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
 
             if (grain.hasReadableSource && channelsToProcess == 1)
             {
-                wet[0] += readHistorySample(historyChannels[0], grain.readPosition) * envelope;
+                grain.lastOutputLeft =
+                    readHistorySample(historyChannels[0], grain.readPosition) * renderedEnvelope;
+                grain.lastOutputRight = 0.0f;
+                wet[0] += grain.lastOutputLeft;
             }
             else if (grain.hasReadableSource)
             {
@@ -200,16 +256,18 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
                 const auto centredImage = (left + right) * 0.70710678118f;
                 if (grain.pan < 0.0f)
                 {
-                    wet[0] += (left * (1.0f - grain.panAmount)
-                               + centredImage * grain.panAmount) * envelope;
-                    wet[1] += right * (1.0f - grain.panAmount) * envelope;
+                    grain.lastOutputLeft = (left * (1.0f - grain.panAmount)
+                               + centredImage * grain.panAmount) * renderedEnvelope;
+                    grain.lastOutputRight = right * (1.0f - grain.panAmount) * renderedEnvelope;
                 }
                 else
                 {
-                    wet[0] += left * (1.0f - grain.panAmount) * envelope;
-                    wet[1] += (right * (1.0f - grain.panAmount)
-                               + centredImage * grain.panAmount) * envelope;
+                    grain.lastOutputLeft = left * (1.0f - grain.panAmount) * renderedEnvelope;
+                    grain.lastOutputRight = (right * (1.0f - grain.panAmount)
+                               + centredImage * grain.panAmount) * renderedEnvelope;
                 }
+                wet[0] += grain.lastOutputLeft;
+                wet[1] += grain.lastOutputRight;
             }
 
             if (grain.hasReadableSource)
@@ -220,11 +278,39 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
             }
 
             ++grain.ageInSamples;
-            if (grain.ageInSamples >= grain.lengthInSamples)
+            if (grain.syncVoice)
+            {
+                const auto envelopePpqPerSample = validClock && timing.playing
+                    ? ppqPerSample
+                    : (! timing.playing && timing.bpm > 0.0
+                        ? timing.bpm / (60.0 * currentSampleRate) : 0.0);
+                if (grain.lifetimePpq > 0.0)
+                    grain.lifeProgress += envelopePpqPerSample / grain.lifetimePpq;
+            }
+            if (grain.releaseSamplesRemaining > 0)
+                --grain.releaseSamplesRemaining;
+            if ((grain.syncVoice && grain.lifeProgress >= 1.0)
+                || (! grain.syncVoice && grain.ageInSamples >= grain.lengthInSamples)
+                || (grain.releaseSamplesTotal > 0 && grain.releaseSamplesRemaining <= 0))
             {
                 grain.active = false;
                 grain.hasReadableSource = false;
                 --activeGrainCount;
+            }
+        }
+
+        if (syncState.activeCutTails > 0)
+        {
+            for (auto& tail : syncState.cutTails)
+            {
+                if (tail.samplesRemaining <= 0)
+                    continue;
+                const auto tailGain = static_cast<float>(tail.samplesRemaining)
+                    / static_cast<float>(juce::jmax(1, tail.samplesTotal));
+                wet[0] += tail.levelLeft * tailGain;
+                wet[1] += tail.levelRight * tailGain;
+                if (--tail.samplesRemaining <= 0)
+                    --syncState.activeCutTails;
             }
         }
 
@@ -276,6 +362,9 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
         ++totalSamplesWritten;
         ++timelineSample;
     }
+
+    syncState.clockWasValid = validClock;
+    syncState.wasPlaying = timing.playing;
 }
 
 void GranulatorEngine::getVisualFrame(VisualFrame& destination) const noexcept
@@ -296,8 +385,9 @@ void GranulatorEngine::getVisualFrame(VisualFrame& destination) const noexcept
             sourceDelay -= static_cast<double>(historyLength);
 
         const auto denominator = juce::jmax(1, grain.lengthInSamples - 1);
-        const auto phase = static_cast<float>(grain.ageInSamples)
-            / static_cast<float>(denominator);
+        const auto phase = grain.syncVoice
+            ? static_cast<float>(grain.lifeProgress)
+            : static_cast<float>(grain.ageInSamples) / static_cast<float>(denominator);
         destination.grains[static_cast<size_t>(destination.grainCount++)] = {
             grain.eventId,
             sourceDelay,
@@ -306,8 +396,219 @@ void GranulatorEngine::getVisualFrame(VisualFrame& destination) const noexcept
             grain.pan,
             grain.ageInSamples,
             grain.lengthInSamples
+            , juce::jlimit(0.0f, 1.0f, phase)
         };
     }
+}
+
+double GranulatorEngine::divisionPpq(const int division) noexcept
+{
+    constexpr std::array<int, 9> ticks { 2, 3, 4, 6, 8, 12, 16, 24, 32 };
+    return static_cast<double>(ticks[static_cast<size_t>(juce::jlimit(0, 8, division))]) / 16.0;
+}
+
+void GranulatorEngine::releaseAllSyncVoices() noexcept
+{
+    const auto release = juce::jmax(1, static_cast<int>(std::round(currentSampleRate * 0.001)));
+    for (auto& grain : grains)
+    {
+        if (grain.active && grain.syncVoice)
+        {
+            grain.releaseSamplesRemaining = release;
+            grain.releaseSamplesTotal = release;
+        }
+    }
+}
+
+void GranulatorEngine::processSyncEvents(const Controls& controls,
+                                         const Timing& timing,
+                                         const double currentPpq) noexcept
+{
+    if (! timing.playing || ! timing.clockValid)
+        return;
+
+    const auto requestedDuration = divisionPpq(controls.syncDivision);
+    if (! syncState.active)
+    {
+        syncState.active = true;
+        syncState.awaitingBoundary = true;
+        syncState.durationPpq = requestedDuration;
+        syncState.division = juce::jlimit(0, 8, controls.syncDivision);
+        syncState.nextBoundaryPpq = (std::floor(currentPpq / requestedDuration) + 1.0)
+            * requestedDuration;
+        const auto samplesToBoundary = juce::jmax(1, static_cast<int>(std::ceil(
+            (syncState.nextBoundaryPpq - currentPpq) * 60.0 * currentSampleRate / timing.bpm)));
+        for (auto& grain : grains)
+        {
+            if (grain.active && ! grain.syncVoice)
+            {
+                grain.releaseSamplesRemaining = samplesToBoundary;
+                grain.releaseSamplesTotal = samplesToBoundary;
+            }
+        }
+        return;
+    }
+
+    syncState.disabling = ! controls.sync;
+
+    if (syncState.awaitingBoundary && syncState.disabling)
+    {
+        for (auto& grain : grains)
+        {
+            if (grain.active && ! grain.syncVoice)
+            {
+                grain.releaseSamplesRemaining = 0;
+                grain.releaseSamplesTotal = 0;
+            }
+        }
+        syncState = {};
+        reconcilePopulation(controls);
+        return;
+    }
+
+    if (syncState.disabling && currentPpq + ppqEpsilon >= syncState.nextBoundaryPpq)
+    {
+        releaseAllSyncVoices();
+        syncState = {};
+        nextBirthSample = static_cast<double>(timelineSample);
+        reconcilePopulation(controls);
+        return;
+    }
+
+    if (syncState.awaitingBoundary && currentPpq + ppqEpsilon >= syncState.nextBoundaryPpq)
+    {
+        syncState.awaitingBoundary = false;
+        commitSyncBoundary(controls, syncState.nextBoundaryPpq, timing.bpm);
+    }
+    else if (! syncState.awaitingBoundary
+             && currentPpq + ppqEpsilon >= syncState.nextBoundaryPpq)
+    {
+        commitSyncBoundary(controls, syncState.nextBoundaryPpq, timing.bpm);
+    }
+
+    for (auto lane = 0; lane < syncState.density; ++lane)
+    {
+        auto& state = syncState.lanes[static_cast<size_t>(lane)];
+        if (state.onsetPending && currentPpq + ppqEpsilon >= state.onsetPpq)
+        {
+            beginSyncLane(lane, controls, timing.bpm);
+            state.onsetPending = false;
+        }
+    }
+}
+
+void GranulatorEngine::commitSyncBoundary(const Controls& controls,
+                                           const double boundaryPpq,
+                                           const double bpm) noexcept
+{
+    const auto newDivision = juce::jlimit(0, 8, controls.syncDivision);
+    const auto duration = divisionPpq(newDivision);
+    const auto density = juce::jlimit(1, maximumGrains,
+                                     static_cast<int>(std::round(controls.density)));
+    const auto drift = juce::jlimit(0.0f, 1.0f, controls.drift);
+
+    if (! syncState.gridEnd && controls.gridEnd)
+        releaseAllSyncVoices();
+
+    syncState.phaseOriginPpq = boundaryPpq;
+    syncState.durationPpq = duration;
+    syncState.division = newDivision;
+    syncState.density = density;
+    syncState.drift = drift;
+    syncState.gridEnd = controls.gridEnd;
+    syncState.nextBoundaryPpq = boundaryPpq + duration;
+
+    const auto latestOffsetPpq = duration * 0.20 * static_cast<double>(drift);
+    const auto latestOffsetSamples = static_cast<std::int64_t>(std::ceil(
+        latestOffsetPpq * 60.0 * currentSampleRate / juce::jmax(1.0, bpm)));
+    const auto requestedWindow = static_cast<std::int64_t>(std::round(
+        juce::jlimit(minimumTimeSeconds, maximumTimeSeconds, controls.timeSeconds)
+        * currentSampleRate));
+    const auto available = juce::jmin<std::int64_t>(requestedWindow, totalSamplesWritten);
+    const auto safety = static_cast<std::int64_t>(std::round(baseSafetyMarginSeconds
+                                                             * currentSampleRate));
+    const auto safeSpan = available - latestOffsetSamples - safety;
+
+    for (auto lane = 0; lane < maximumGrains; ++lane)
+    {
+        auto& state = syncState.lanes[static_cast<size_t>(lane)];
+        state = {};
+        if (lane >= density || safeSpan <= safety)
+            continue;
+        const auto rank = density > 1
+            ? static_cast<double>(lane) / static_cast<double>(density - 1) : 0.0;
+        state.offsetPpq = latestOffsetPpq * rank;
+        state.onsetPpq = boundaryPpq + state.offsetPpq;
+        const auto tideWidth = 0.015 + 0.535 * smoothStep(juce::jlimit(0.0f, 1.0f, controls.tide));
+        const auto sequence = wrappedUnit(static_cast<float>(
+            (static_cast<double>(lane) + 0.5) * goldenRatioConjugate
+            + static_cast<double>(syncState.boundaryOrdinal) * 0.38196601125
+            + randomUnit(0, 31ULL)));
+        const auto delay = static_cast<std::int64_t>(std::round(
+            static_cast<double>(safety) + static_cast<double>(safeSpan - safety)
+                * (0.12 + tideWidth * sequence)));
+        state.sourceAnchorSample = totalSamplesWritten - delay;
+        state.anchorValid = state.sourceAnchorSample >= 0;
+        state.onsetPending = state.anchorValid;
+    }
+    ++syncState.boundaryOrdinal;
+}
+
+bool GranulatorEngine::beginSyncLane(const int laneIndex,
+                                     const Controls& controls,
+                                     const double bpm) noexcept
+{
+    auto& lane = syncState.lanes[static_cast<size_t>(laneIndex)];
+    auto& grain = grains[static_cast<size_t>(laneIndex)];
+    if (! lane.anchorValid || lane.sourceAnchorSample < totalSamplesWritten - historyLength + 2)
+        return false;
+
+    if (grain.active)
+    {
+        // Every forced cut decays through the per-lane one-millisecond tail
+        // rather than truncating the running voice at a nonzero level.
+        auto& tail = syncState.cutTails[static_cast<size_t>(laneIndex)];
+        if (tail.samplesRemaining <= 0)
+            ++syncState.activeCutTails;
+        tail.levelLeft = grain.lastOutputLeft;
+        tail.levelRight = grain.lastOutputRight;
+        tail.samplesTotal = juce::jmax(1,
+            static_cast<int>(std::round(currentSampleRate * 0.001)));
+        tail.samplesRemaining = tail.samplesTotal;
+        grain.active = false;
+        --activeGrainCount;
+    }
+    const auto lifetime = syncState.gridEnd
+        ? juce::jmax(1.0e-6, syncState.durationPpq - lane.offsetPpq)
+        : syncState.durationPpq;
+    const auto delay = static_cast<double>(totalSamplesWritten - lane.sourceAnchorSample);
+    grain = {};
+    grain.active = true;
+    grain.syncVoice = true;
+    grain.hasReadableSource = true;
+    grain.birthSample = timelineSample;
+    grain.eventId = birthOrdinal++;
+    grain.lifetimePpq = lifetime;
+    grain.lifeProgress = 0.0;
+    grain.lengthInSamples = juce::jmax(2, static_cast<int>(std::round(
+        lifetime * 60.0 * currentSampleRate / juce::jmax(1.0, bpm))));
+    grain.phaseScale = 1.0f / static_cast<float>(grain.lengthInSamples - 1);
+    grain.shapeAtBirth = juce::jlimit(0.0f, 1.0f, controls.shape);
+    grain.envelopeMassAtBirth = 0.5f
+        + grain.shapeAtBirth * (2.0f / juce::MathConstants<float>::pi - 0.5f);
+    grain.tideAtBirth = juce::jlimit(0.0f, 1.0f, controls.tide);
+    grain.playbackSpeed = 1.0;
+    grain.sourceDelaySamples = delay;
+    grain.readPosition = static_cast<double>(writePosition) - delay;
+    while (grain.readPosition < 0.0)
+        grain.readPosition += static_cast<double>(historyLength);
+    const auto panIdentity = randomUnit(static_cast<std::int64_t>(syncState.boundaryOrdinal),
+                                        static_cast<std::uint64_t>(laneIndex) + 401ULL)
+        * 2.0f - 1.0f;
+    grain.pan = panIdentity * juce::jlimit(0.0f, 1.0f, controls.spread);
+    grain.panAmount = std::sin(juce::MathConstants<float>::halfPi * std::abs(grain.pan));
+    ++activeGrainCount;
+    return true;
 }
 
 void GranulatorEngine::reconcilePopulation(const Controls& controls) noexcept

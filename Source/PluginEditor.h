@@ -49,6 +49,7 @@ private:
     juce::String name;
     juce::Slider slider;
     bool featured = false;
+    bool musicalDivision = false;
     float glow = 0.0f;
     float glowTarget = 0.0f;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
@@ -101,7 +102,35 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
 };
 
-class TidesAudioProcessorEditor final : public juce::AudioProcessorEditor
+class TideToggle final : public juce::Component
+{
+public:
+    TideToggle(juce::AudioProcessorValueTreeState&, const juce::String& parameterID,
+               const juce::String& displayName);
+    void paint(juce::Graphics&) override;
+    void resized() override;
+    void setTooltip(const juce::String& text);
+
+private:
+    juce::String name;
+    juce::ToggleButton button;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> attachment;
+};
+
+class SyncSizeControl final : public juce::Component
+{
+public:
+    explicit SyncSizeControl(juce::AudioProcessorValueTreeState&);
+    void resized() override;
+    void setSyncMode(bool enabled);
+
+private:
+    TideParameter milliseconds;
+    TideParameter division;
+};
+
+class TidesAudioProcessorEditor final : public juce::AudioProcessorEditor,
+                                        private juce::Timer
 {
 public:
     explicit TidesAudioProcessorEditor(TideGrainsAudioProcessor&);
@@ -111,6 +140,8 @@ public:
     void resized() override;
 
 private:
+    void timerCallback() override;
+    void applySyncMode(bool enabled);
     TidesLookAndFeel lookAndFeel;
     TideField tideField;
 
@@ -119,14 +150,18 @@ private:
     TideParameter time;
     TideParameter tide;
     TideParameter mix;
-    TideParameter size;
+    SyncSizeControl size;
     TideParameter density;
     TideParameter shape;
     TideParameter spread;
     TideParameter drift;
+    TideToggle sync;
+    TideToggle gridEnd;
     TideParameter feedback;
 
-    std::array<TideParameter*, 6> lowerControls;
+    std::array<juce::Component*, 7> lowerControls;
+    juce::TooltipWindow tooltipWindow { this, 500 };
+    bool syncMode = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TidesAudioProcessorEditor)
 };

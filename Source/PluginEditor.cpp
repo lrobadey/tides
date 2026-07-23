@@ -218,7 +218,8 @@ TideParameter::TideParameter(juce::AudioProcessorValueTreeState& state,
                              const juce::String& parameterID,
                              const juce::String& displayName,
                              const bool featureControl)
-    : name(displayName.toUpperCase()), featured(featureControl)
+    : name(displayName.toUpperCase()), featured(featureControl),
+      musicalDivision(parameterID == tide::parameter::syncDivision)
 {
     slider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
     slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -304,6 +305,14 @@ void TideParameter::paint(juce::Graphics& g)
     juce::String value;
     if (name == "TIME")
         value = juce::String(slider.getValue(), slider.getValue() < 1.0 ? 2 : 1) + " s";
+    else if (musicalDivision)
+    {
+        constexpr std::array<const char*, 9> labels {
+            "1/32", "1/32.", "1/16", "1/16.", "1/8", "1/8.", "1/4", "1/4.", "1/2"
+        };
+        value = labels[static_cast<size_t>(juce::jlimit(0, 8,
+            static_cast<int>(std::round(slider.getValue()))))];
+    }
     else if (name == "SIZE")
         value = juce::String(slider.getValue(), 0) + " ms";
     else if (name == "DENSITY")
@@ -478,6 +487,73 @@ void TideGainBar::timerCallback()
             displayedLimiterActivity = 0.0f;
     }
     repaint();
+}
+
+TideToggle::TideToggle(juce::AudioProcessorValueTreeState& state,
+                       const juce::String& parameterID,
+                       const juce::String& displayName)
+    : name(displayName.toUpperCase())
+{
+    button.setClickingTogglesState(true);
+    button.setButtonText({});
+    button.setName(displayName);
+    button.setTitle(displayName);
+    button.setColour(juce::ToggleButton::tickColourId, juce::Colours::transparentBlack);
+    button.setColour(juce::ToggleButton::tickDisabledColourId, juce::Colours::transparentBlack);
+    button.onClick = [this] { repaint(); };
+    addAndMakeVisible(button);
+    attachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        state, parameterID, button);
+}
+
+void TideToggle::paint(juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour(isEnabled() ? muted : muted.withAlpha(0.35f));
+    drawTrackedText(g, name, bounds.removeFromTop(18.0f), 0.18f,
+                    juce::Justification::centred);
+    const auto track = juce::Rectangle<float>(38.0f, 18.0f)
+        .withCentre({ getLocalBounds().toFloat().getCentreX(), bounds.getCentreY() });
+    g.setColour((button.getToggleState() ? tideBlue : foam)
+                    .withAlpha(isEnabled() ? (button.getToggleState() ? 0.65f : 0.12f) : 0.06f));
+    g.fillRoundedRectangle(track, 9.0f);
+    const auto knobX = button.getToggleState() ? track.getRight() - 9.0f : track.getX() + 9.0f;
+    g.setColour((button.getToggleState() ? foam : muted).withAlpha(isEnabled() ? 0.9f : 0.3f));
+    g.fillEllipse(juce::Rectangle<float>(12.0f, 12.0f).withCentre({ knobX, track.getCentreY() }));
+    g.setColour(foam.withAlpha(isEnabled() ? 0.72f : 0.25f));
+    g.setFont(font(10.0f, true));
+    g.drawText(button.getToggleState() ? "ON" : "OFF", bounds.removeFromBottom(18.0f),
+               juce::Justification::centred, false);
+}
+
+void TideToggle::resized()
+{
+    button.setBounds(getLocalBounds());
+}
+
+void TideToggle::setTooltip(const juce::String& text)
+{
+    button.setTooltip(text);
+}
+
+SyncSizeControl::SyncSizeControl(juce::AudioProcessorValueTreeState& state)
+    : milliseconds(state, tide::parameter::size, "Size"),
+      division(state, tide::parameter::syncDivision, "Size")
+{
+    addAndMakeVisible(milliseconds);
+    addChildComponent(division);
+}
+
+void SyncSizeControl::resized()
+{
+    milliseconds.setBounds(getLocalBounds());
+    division.setBounds(getLocalBounds());
+}
+
+void SyncSizeControl::setSyncMode(const bool enabled)
+{
+    milliseconds.setVisible(! enabled);
+    division.setVisible(enabled);
 }
 
 TideField::TideField(TideGrainsAudioProcessor& owner)
@@ -655,12 +731,7 @@ void TideField::paint(juce::Graphics& g)
             const auto y = signalCentre
                 + grain.pan * maximumSignalHeight * 0.72f;
             const auto envelope = juce::jlimit(0.0f, 1.0f, grain.envelope);
-            const auto life = grain.lengthInSamples > 0
-                ? juce::jlimit(0.0f,
-                               1.0f,
-                               static_cast<float>(grain.ageInSamples)
-                                   / static_cast<float>(grain.lengthInSamples))
-                : 0.0f;
+            const auto life = juce::jlimit(0.0f, 1.0f, grain.lifeProgress);
             const auto radius = 1.25f + envelope * 3.1f;
             const auto colour = tideBlue.interpolatedWith(
                 coral, juce::jlimit(0.0f, 1.0f, grain.pan * 0.5f + 0.5f));
@@ -757,13 +828,15 @@ TidesAudioProcessorEditor::TidesAudioProcessorEditor(TideGrainsAudioProcessor& o
       time(owner.parameters, tide::parameter::time, "Time", true),
       tide(owner.parameters, tide::parameter::tide, "Tide", true),
       mix(owner.parameters, tide::parameter::mix, "Mix", true),
-      size(owner.parameters, tide::parameter::size, "Size"),
+      size(owner.parameters),
       density(owner.parameters, tide::parameter::density, "Density"),
       shape(owner.parameters, tide::parameter::shape, "Shape"),
       spread(owner.parameters, tide::parameter::spread, "Spread"),
       drift(owner.parameters, tide::parameter::drift, "Drift"),
+      sync(owner.parameters, tide::parameter::sync, "Sync"),
+      gridEnd(owner.parameters, tide::parameter::gridEnd, "Grid End"),
       feedback(owner.parameters, tide::parameter::feedback, "Feedback"),
-      lowerControls { &size, &density, &shape, &spread, &drift, &feedback }
+      lowerControls { &size, &density, &shape, &spread, &drift, &gridEnd, &feedback }
 {
     setLookAndFeel(&lookAndFeel);
     setOpaque(true);
@@ -774,13 +847,39 @@ TidesAudioProcessorEditor::TidesAudioProcessorEditor(TideGrainsAudioProcessor& o
     addAndMakeVisible(time);
     addAndMakeVisible(tide);
     addAndMakeVisible(mix);
+    addAndMakeVisible(sync);
     for (auto* control : lowerControls)
         addAndMakeVisible(*control);
+
+    sync.setTooltip("Sync requires a valid playing host BPM and PPQ clock; no internal clock is used.");
+    gridEnd.setTooltip("With Grid End off, Drift layout changes form on the following cycle.");
+    applySyncMode(owner.parameters.getRawParameterValue(tide::parameter::sync)->load() >= 0.5f);
+    startTimerHz(20);
 
     setResizable(true, true);
     setResizeLimits(780, 520, 1200, 800);
     getConstrainer()->setFixedAspectRatio(1.5);
     setSize(960, 640);
+}
+
+void TidesAudioProcessorEditor::applySyncMode(const bool enabled)
+{
+    syncMode = enabled;
+    size.setSyncMode(enabled);
+    gridEnd.setEnabled(enabled);
+    gridEnd.setAlpha(enabled ? 1.0f : 0.42f);
+    repaint();
+}
+
+void TidesAudioProcessorEditor::timerCallback()
+{
+    auto& processor = static_cast<TideGrainsAudioProcessor&>(*getAudioProcessor());
+    const auto enabled = processor.parameters.getRawParameterValue(tide::parameter::sync)->load() >= 0.5f;
+    if (enabled != syncMode)
+        applySyncMode(enabled);
+    else
+        gridEnd.repaint();
+    sync.repaint();
 }
 
 TidesAudioProcessorEditor::~TidesAudioProcessorEditor()
@@ -911,6 +1010,10 @@ void TidesAudioProcessorEditor::resized()
                          juce::roundToInt(25.0f * scale),
                          juce::roundToInt(gainWidth),
                          juce::roundToInt(62.0f * scale));
+    sync.setBounds(juce::roundToInt(247.0f * scale),
+                   juce::roundToInt(28.0f * scale),
+                   juce::roundToInt(64.0f * scale),
+                   juce::roundToInt(56.0f * scale));
 
     tideField.setBounds(juce::roundToInt(22.0f * scale),
                         juce::roundToInt(headerHeight),

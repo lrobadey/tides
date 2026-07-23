@@ -292,6 +292,56 @@
     .step p { color: var(--muted); }
     .step code { color: var(--hot); font-size: 12px; }
 
+    .architecture-map { border-top: 1px solid var(--line); }
+    .architecture-row {
+      display: grid;
+      grid-template-columns: 150px 230px minmax(0, 1fr);
+      gap: 28px;
+      padding: 26px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .architecture-row .owner {
+      color: var(--foam);
+      font: 11px/1.5 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .architecture-row h3 { font-size: 22px; }
+    .architecture-row p { color: var(--muted); }
+    .architecture-row code { color: var(--hot); font-size: 12px; }
+
+    .technical-rules {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 42px;
+      border-top: 1px solid var(--line);
+    }
+    .technical-rule {
+      min-height: 178px;
+      padding: 26px 30px 28px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .technical-rule:nth-child(odd) { border-right: 1px solid var(--line); }
+    .technical-rule:nth-child(even) { padding-left: 30px; }
+    .technical-rule .tag { display: block; margin-bottom: 10px; }
+    .technical-rule p { color: var(--muted); }
+    .technical-rule code { color: var(--hot); font-size: 12px; }
+
+    .tech-comment {
+      grid-column: 3;
+      margin-top: 13px;
+      padding-left: 14px;
+      border-left: 1px solid rgba(230, 199, 124, .58);
+      color: #cfc4a8 !important;
+      font-size: 13px;
+    }
+    .tech-comment b {
+      color: var(--gold);
+      font-size: 10px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
     .tests {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -369,7 +419,7 @@
       .hero { min-height: 78svh; }
       .phase-field { left: 24%; opacity: .42; }
       .section-head { grid-template-columns: 1fr; gap: 14px; }
-      .scope, .grid-end, .tests { grid-template-columns: 1fr; }
+      .scope, .grid-end, .tests, .technical-rules { grid-template-columns: 1fr; }
       .scope > div:nth-child(odd), .test:nth-child(odd) { border-right: 0; }
       .scope > div:nth-child(even), .grid-end > div + div, .test:nth-child(even) { padding-left: 0; }
       .grid-end > div + div { border-left: 0; border-top: 1px solid var(--line); }
@@ -377,6 +427,8 @@
       .division-strip span:nth-child(3n) { border-right: 0; }
       .step { grid-template-columns: 48px 1fr; }
       .step p { grid-column: 2; }
+      .architecture-row { grid-template-columns: 1fr; gap: 10px; }
+      .technical-rule { min-height: 0; border-right: 0 !important; padding-left: 0 !important; }
       .contract-table th:nth-child(3), .contract-table td:nth-child(3) { display: none; }
       .contract-table td:first-child { width: 30%; }
       .event-table th:nth-child(2), .event-table td:nth-child(2) { display: none; }
@@ -398,9 +450,10 @@
     <nav aria-label="Plan sections">
       <a href="#contract">Contract</a>
       <a href="#events">Events</a>
+      <a href="#technical">Technical</a>
       <a href="#build">Build</a>
       <a href="#tests">Tests</a>
-      <a href="#open">Open decisions</a>
+      <a href="#open">Decisions</a>
     </nav>
   </header>
 
@@ -413,7 +466,7 @@
       <div class="status-line">
         <span><b>Free mode preserved</b></span>
         <span><b>64 voices maximum</b></span>
-        <span class="open"><b>4 decisions remain</b></span>
+        <span><b>Plan locked</b></span>
       </div>
     </div>
   </div>
@@ -448,21 +501,26 @@
 
       <div class="formula">
         offset(i) = duration × 0.20 × Drift × i / (N − 1)
-        <small>For N = 1, offset is always zero. At maximum Drift, lanes are evenly distributed from the boundary through the first 20% of the selected duration.</small>
+        <small>For N = 1, offset is always zero. At maximum Drift, lanes are evenly distributed from the boundary through the first 20% of the selected duration. Source anchors must satisfy: anchor delay + maximum onset offset + read safety margin ≤ available history.</small>
       </div>
 
       <table class="contract-table">
         <thead><tr><th>Area</th><th>Locked behavior</th><th>Boundary</th></tr></thead>
         <tbody>
           <tr><td>Mode</td><td>Sync is additional and defaults off. Free retains its current millisecond Size behavior and existing Drift behavior.</td><td>No Free-mode DSP redesign.</td></tr>
-          <tr><td>Clock</td><td>DAW/host clock only. Valid BPM and PPQ are required; there is no internal tempo fallback.</td><td>No valid clock means no new Sync grains.</td></tr>
+          <tr><td>Grid End label</td><td><b>Grid End</b> is the final user-facing name for the binary shared-boundary ending control.</td><td>Do not rename it to End at Grid or Cut at Grid.</td></tr>
+          <tr><td>Sync-off UI</td><td>When Sync is off, Size returns to its millisecond display while Grid End remains in place, dimmed and disabled.</td><td>No layout shift; the saved Sync division remains hidden behind the Free Size display.</td></tr>
+          <tr><td>Timing guidance</td><td>No persistent status line. Explain unavailable host clock and full-tail Drift latency through contextual control tooltips only.</td><td>Keep the compact editor free of new status chrome.</td></tr>
+          <tr><td>Clock</td><td>DAW/host clock only. Valid BPM and PPQ are required for boundaries, onsets, and source capture; there is no internal scheduling fallback. Read one timing snapshot per audio block, treat its BPM as constant within that block, and derive boundary samples from its PPQ origin.</td><td>Re-read every block. The last valid BPM may advance already-active envelopes after an intentional stop, but it must never schedule another event.</td></tr>
           <tr><td>Size control</td><td>The same visible Size position shows milliseconds in Free and the separate nine-value rhythmic division in Sync. Sync division defaults to 1/8 and retains its own state.</td><td>Do not overload the released millisecond parameter.</td></tr>
           <tr><td>Lanes</td><td>Density is the number of persistent rhythmic lanes, from 1–64. Every lane has a stable rank and re-articulates on its phase.</td><td>No disposable cohort and no expanded pool.</td></tr>
-          <tr><td>Source capture</td><td>At every global boundary, Tide chooses one fresh, coherent set of source anchors from the live rolling buffer and assigns one to each lane.</td><td>Delayed lanes retain that assigned anchor until onset.</td></tr>
-          <tr><td>Tide</td><td>Tide remains the only control that decides where the cycle samples: low is tightly clustered behind the leader; high spreads farther through the existing wake.</td><td>Preserve current recognizability and ordering.</td></tr>
+          <tr><td>Source capture</td><td>At every global boundary, Tide chooses one fresh, coherent set of source anchors from the live rolling buffer and assigns one to each lane. Restrict the eligible source window so even the latest delayed onset reads its assigned moment before that audio can be overwritten.</td><td>Use the existing five-second history; delayed lanes retain the exact assigned anchor until onset. Never shift an expired anchor forward. If no safe exact anchor exists, that cycle remains silent.</td></tr>
+          <tr><td>Tide</td><td>Tide remains the only control that decides the width of the cycle’s source region: low is tightly clustered behind the leader; high spreads farther through the existing wake. Within that region, the existing seed drives a deterministic low-discrepancy assignment keyed by boundary and stable lane rank.</td><td>Preserve current recognizability and ordering. Sync Drift never enters source selection.</td></tr>
           <tr><td>Drift</td><td>In Sync only, Drift controls onset offsets and nothing else. It adds no extra source reach, timbre choice, playback-speed change, lifetime jitter, or random timing.</td><td>Free Drift remains unchanged.</td></tr>
+          <tr><td>Shape</td><td>With Grid End on, compress the complete Shape envelope into each lane’s shortened audible lifetime of <span class="mono">duration − offset(i)</span>.</td><td>Every delayed lane completes the full designed envelope and reaches zero at the shared boundary.</td></tr>
           <tr><td>Spread</td><td>Unchanged. Zero preserves sampled stereo placement; maximum independently moves grains anywhere from their original position toward fully left or right.</td><td>Refresh as existing grain behavior does.</td></tr>
           <tr><td>Tempo</td><td>Lane periods and envelope progress live in musical beat/PPQ space. Tempo automation changes real-time duration without pitch-shifting or changing source playback speed.</td><td>Stay rhythmically aligned through tempo changes.</td></tr>
+          <tr><td>Host tail</td><td>Report at least the greater of the existing five-second tail and the current synchronized duration derived from the latest valid host clock.</td><td>A slow full-tail grain must not be hidden from offline render or host tail handling.</td></tr>
         </tbody>
       </table>
 
@@ -488,99 +546,178 @@
       <table class="event-table">
         <thead><tr><th>Event</th><th>Commit point</th><th>Result</th></tr></thead>
         <tbody>
-          <tr><td>Enable Sync</td><td>Next canonical boundary of selected division</td><td>Stop Free births immediately; at the boundary, safety-fade remaining Free tails and launch the synchronized layout.</td></tr>
-          <tr><td>Disable Sync</td><td>Next current Sync boundary</td><td>Safety-fade Sync lanes, reset the Free scheduler, and resume Free births there. Never run both schedulers as a blended mode.</td></tr>
+          <tr><td>Enable Sync</td><td>Next canonical boundary of selected division</td><td>Stop Free births immediately; safety-fade remaining Free tails into that boundary, then launch the synchronized layout.</td></tr>
+          <tr><td>Disable Sync</td><td>Next current Sync boundary</td><td>Safety-fade Sync lanes into that boundary, reset the Free scheduler, and resume Free births there. Never run both schedulers as a blended mode.</td></tr>
+          <tr><td>Reverse pending mode change</td><td>Immediate cancellation</td><td>The latest requested mode wins until the handoff commits. Cancelling Enable resumes Free births from the current block; cancelling Disable leaves the current Sync schedule authoritative. Never execute a stale queued handoff.</td></tr>
           <tr><td>Division change</td><td>Next boundary of the old/current division</td><td>That boundary becomes the new division’s phase origin. This is the deliberate syncopation seam; do not snap the change to the new division’s canonical host grid.</td></tr>
           <tr><td>Division + full tail</td><td>First new onset for each lane</td><td>The new schedule is authoritative. A still-running old grain ends at its lane’s new onset; a grain that already ended leaves a short gap. No bridge grain.</td></tr>
           <tr><td>Density change</td><td>Next global Sync boundary</td><td>Recalculate the evenly spaced layout. Added lanes enter at their offsets; removed full-tail lanes may finish naturally but receive no new articulation.</td></tr>
           <tr><td>Drift + Grid End on</td><td>Next global Sync boundary</td><td>Jump directly to the newly interpolated onset layout. User automation provides any desired gradual migration.</td></tr>
           <tr><td>Drift + Grid End off</td><td>One-cycle formation latency</td><td>Each lane uses one interval of <span class="mono">duration + newOffset − oldOffset</span>, then resumes the exact selected duration at its new phase. Automation intended for a given cycle must be placed one cycle earlier.</td></tr>
           <tr><td>Grid End change</td><td>Next global Sync boundary</td><td>Binary parameter only: exactly 0 or 1. Turning it on fades cross-boundary tails there; turning it off gives new articulations their full duration.</td></tr>
-          <tr><td>Transport stop</td><td>Immediate scheduling stop</td><td>No new grains. Existing grains may complete. On resume, wait for the next canonical boundary of the selected division.</td></tr>
+          <tr><td>Simultaneous automation</td><td>One atomic boundary snapshot</td><td>Transport reset wins first, then mode handoff, then division establishes duration and phase origin; Density, Drift, and Grid End form one layout from that duration. Do not apply partial combinations within a boundary.</td></tr>
+          <tr><td>Transport stop</td><td>Immediate scheduling stop</td><td>No new boundaries, onsets, or source captures. Existing grains complete from the last valid BPM while the host continues calling the processor; that cached tempo advances envelopes only. On resume, clear active grains and history, then wait for the next canonical boundary.</td></tr>
           <tr><td>Start / seek / loop wrap</td><td>Host discontinuity</td><td>Clear active grains and stale rolling history, re-anchor to the selected division’s canonical PPQ grid, and wait for its next boundary. Starting halfway through an eighth waits one sixteenth.</td></tr>
-          <tr><td>Clock unavailable</td><td>Immediate</td><td>Do not schedule Sync grains; report waiting for host clock. Free mode remains usable outside a host.</td></tr>
+          <tr><td>Clock lost while playing</td><td>Immediate safety release</td><td>Stop Sync scheduling and fade active Sync grains through the one-millisecond per-lane smoother. Do not extrapolate the missing clock. Free mode remains usable if the user disables Sync.</td></tr>
+          <tr><td>Clock becomes valid again</td><td>Next canonical boundary</td><td>Re-anchor from the recovered host PPQ and resume there. Preserve rolling history when sample position stayed continuous; clear it only for an actual start, seek, loop wrap, or sample-position discontinuity.</td></tr>
         </tbody>
       </table>
     </section>
 
+    <section id="technical">
+      <div class="section-head">
+        <div class="section-kicker">03 / Technical fit</div>
+        <h2>Put each responsibility at its existing seam.</h2>
+      </div>
+
+      <div class="architecture-map">
+        <div class="architecture-row">
+          <div class="owner">Host + state</div>
+          <h3><code>PluginProcessor</code></h3>
+          <p>Keep APVTS construction, raw parameter atomics, playhead access, transport-discontinuity detection, state migration, and the cached host-tail value here. The processor creates one immutable controls/timing snapshot per block and does no musical scheduling itself.</p>
+        </div>
+        <div class="architecture-row">
+          <div class="owner">Scheduling</div>
+          <h3><code>GranulatorEngine</code></h3>
+          <p>Own both scheduler policies. Free retains its current population scheduler. A private nested <code>SyncState</code> owns phase origin, pending and committed cycle settings, 64 fixed lane records, boundary progression, source anchors, and the next onset cursor.</p>
+        </div>
+        <div class="architecture-row">
+          <div class="owner">Rendering</div>
+          <h3>One grain kernel</h3>
+          <p>Both schedulers feed the existing <code>Grain</code> array, interpolated history reader, envelope morph, stereo placement, wet normalization, feedback return, equal-power mix, and output limiter. Sync adds no parallel audio graph and no dynamic storage.</p>
+        </div>
+        <div class="architecture-row">
+          <div class="owner">Presentation</div>
+          <h3><code>PluginEditor</code></h3>
+          <p>Keep controls attachment-driven and telemetry read-only. Extend <code>GrainVisualState</code> with explicit normalized life progress for beat-domain Sync envelopes, so <code>TideField</code> continues to draw measured DSP state rather than recreating timing on the message thread.</p>
+        </div>
+        <div class="architecture-row">
+          <div class="owner">Proof</div>
+          <h3><code>Tests</code> + <code>bench</code></h3>
+          <p>Add deterministic Sync fixtures beside the current engine, processor, transport, state, telemetry, safety, and block-size tests. Extend the existing benchmark with a separate worst-case Sync scenario instead of mixing performance assertions into functional tests.</p>
+        </div>
+      </div>
+
+      <div class="technical-rules">
+        <div class="technical-rule">
+          <span class="tag">Block contract</span>
+          <h3>Snapshot once, commit once.</h3>
+          <p>At the start of <code>processBlock</code>, load every parameter once and query <code>PositionInfo</code> once. Validate finite BPM &gt; 0 and finite PPQ, then pass plain values into DSP. The engine copies requested values into pending state and commits one complete cycle snapshot at a boundary; it never mixes parameter generations within one layout. Before commit, a newer mode request replaces and may cancel the pending handoff.</p>
+        </div>
+        <div class="technical-rule">
+          <span class="tag">Musical clock</span>
+          <h3>PPQ is authoritative.</h3>
+          <p>All supported divisions are exact integer multiples of 1/16 PPQ. Store lattice ticks for canonical boundaries and a PPQ phase origin for deliberate division handoffs. Convert PPQ crossings to sample offsets with the current block’s BPM; do not accumulate a free-running sample clock or infer tempo between callbacks.</p>
+        </div>
+        <div class="technical-rule">
+          <span class="tag">Hot path</span>
+          <h3>Spend work only at events.</h3>
+          <p>The existing renderer remains O(samples × active grains). Sync adds an O(1) next-event comparison per sample and at most O(64) work at a global boundary. Source selection, lane layout, envelope denominators, pan coefficients, and safe history limits are precomputed at boundary/onset—not inside every grain/sample calculation.</p>
+        </div>
+        <div class="technical-rule">
+          <span class="tag">Source ownership</span>
+          <h3>Store absolute anchors.</h3>
+          <p>Each lane stores an absolute <code>sourceAnchorSample</code> selected at the boundary. Calculate the safe Tide window from actual filled history, the requested Time window, five-second ring capacity, latest lane offset, and interpolation guard. Distribute anchors with the current <code>randomSeed</code> and a low-discrepancy sequence keyed by boundary ordinal and lane rank. Convert to a wrapped read index only at onset. If the safe window is empty, skip that cycle; never clamp the anchor toward now.</p>
+        </div>
+        <div class="technical-rule">
+          <span class="tag">Lifetime</span>
+          <h3>Advance envelope beats, source samples.</h3>
+          <p>Sync grains store onset PPQ, target lifetime in PPQ, and normalized envelope progress. Grid End uses <code>durationPpq − offsetPpq</code>; Full Tail uses <code>durationPpq</code>. Tempo changes alter the phase increment on the next block, while <code>readPosition</code> continues at exactly 1.0 sample per sample.</p>
+        </div>
+        <div class="technical-rule">
+          <span class="tag">Transitions</span>
+          <h3>One lane, one authoritative articulation.</h3>
+          <p>Mode handoffs schedule bounded release ramps that end at the commit boundary, freeing the same 64 slots before the new layout starts. Every forced cut passes through a per-lane output smoother lasting exactly 1.0 ms, rounded to the nearest sample at the current sample rate. It stores only the lane’s last output state, creates no grain, performs no second history read, and cannot expand the voice pool.</p>
+        </div>
+        <div class="technical-rule">
+          <span class="tag">Stopped clock</span>
+          <h3>Retire voices; never invent events.</h3>
+          <p>Cache the last finite playing BPM. During an intentional stop, use it only to advance the normalized envelopes of grains that were already active; boundary, onset, and source-capture cursors remain frozen. Unexpected BPM/PPQ loss while still playing instead triggers the one-millisecond safety release. Recovered clock data always re-establishes phase from host PPQ.</p>
+        </div>
+        <div class="technical-rule">
+          <span class="tag">Legacy state</span>
+          <h3>Migrate before <code>replaceState</code>.</h3>
+          <p>JUCE restores APVTS parameters from <code>PARAM</code> children. Before replacing state, append any missing Sync children with explicit defaults—0, choice index 4, and 1—then preserve every existing child and <code>randomSeed</code>. This prevents an old preset from inheriting whatever new-control values happen to be live.</p>
+        </div>
+        <div class="technical-rule">
+          <span class="tag">Tail + telemetry</span>
+          <h3>Publish facts, not estimates.</h3>
+          <p>Cache the latest valid synchronized duration in an atomic seconds value for <code>getTailLengthSeconds</code>, returning at least 5 seconds. Publish each grain’s normalized life progress through the existing triple-buffer exchange; the editor must not query the playhead or calculate Sync phase independently.</p>
+        </div>
+      </div>
+    </section>
+
     <section id="build">
       <div class="section-head">
-        <div class="section-kicker">03 / Build</div>
+        <div class="section-kicker">04 / Build</div>
         <h2>A narrow five-step vertical slice.</h2>
       </div>
       <div class="steps">
         <div class="step">
           <h3>Parameters + host snapshot</h3>
           <p>Add stable APVTS IDs for <code>sync</code>, <code>syncDivision</code>, and <code>gridEnd</code>. Read BPM, PPQ, play state, and discontinuities in the processor; pass a small plain timing snapshot into DSP. Keep all work bounded and allocation-free.</p>
+          <p class="tech-comment"><b>Technical comment</b><br><code>ParameterIDs.h</code> owns the IDs. Use <code>AudioParameterBool</code> for Sync and Grid End, and <code>AudioParameterChoice</code> for the nine divisions with index 4 as 1/8. Cache raw atomics in the processor constructor. Query <code>AudioPlayHead::PositionInfo</code> once per block and map it into a plain <code>GranulatorEngine::Timing</code>; never pass JUCE host objects into DSP.</p>
         </div>
         <div class="step">
           <h3>Persistent Sync lanes</h3>
           <p>Add a Sync scheduler alongside the existing Free scheduler in <code>GranulatorEngine</code>. Reuse the same fixed 64-grain storage, history reader, Shape, Spread, feedback path, wet normalization, telemetry, and limiter.</p>
+          <p class="tech-comment"><b>Technical comment</b><br>Keep <code>reconcilePopulation</code>, <code>scheduleBirths</code>, and Free randomization unchanged behind the Free policy. Add private nested <code>SyncState</code> and <code>SyncState::Lane</code> data, with lane rank mapped directly to a grain slot. Factor only the common birth assignment into one helper; do not create a second render loop, history buffer, feedback path, or temporary voice pool.</p>
         </div>
         <div class="step">
           <h3>Boundary state machine</h3>
           <p>Implement phase origin, cycle snapshots, division/density/drift/Grid End commits, full-tail re-articulation, mode handoffs, tempo-following envelope phase, and transport resets as explicit states—not ad hoc parameter branches.</p>
+          <p class="tech-comment"><b>Technical comment</b><br>Represent the nine divisions as integer ticks on a 1/16-PPQ lattice: <code>{2, 3, 4, 6, 8, 12, 16, 24, 32}</code>. Store boundary and onset targets in PPQ, derive one <code>ppqPerSample</code> per block, and advance a sorted lane-event cursor. Boundary work is O(N); the per-sample scheduler check stays O(1). Active Sync envelopes advance in beat space while each source read head still advances at 1× sample speed. A stopped-tail phase increment may use cached BPM, but all event cursors remain frozen.</p>
         </div>
         <div class="step">
           <h3>Minimal editor seam</h3>
-          <p>Add one binary Sync control, switch the visible Size readout between milliseconds and musical divisions, add the binary Grid End control beside Drift, and expose the waiting/latency information chosen below. Do not redesign the visualizer.</p>
+          <p>Add one binary Sync control, switch the visible Size readout between milliseconds and musical divisions, and add the binary Grid End control beside Drift. Keep Grid End visible but dimmed and disabled in Free mode. Put host-clock and full-tail Drift guidance in contextual tooltips only. Do not add a status line or redesign the visualizer.</p>
+          <p class="tech-comment"><b>Technical comment</b><br>Make the Size position one cohesive component containing two co-located attached controls: the existing millisecond slider and a discrete division slider. Toggle visibility; never detach and retarget one attachment. Add small reusable toggle components backed by <code>ButtonAttachment</code>, grow <code>lowerControls</code> to seven positions, and let an editor-owned <code>TooltipWindow</code> surface the two contextual explanations.</p>
         </div>
         <div class="step">
           <h3>Regression ladder</h3>
           <p>Run focused scheduler/parameter/state tests, the full CTest suite, Debug and Release builds, sanitizer coverage for dense automation, then VST3/Standalone validation. DAW listening remains a separate subjective check.</p>
+          <p class="tech-comment"><b>Technical comment</b><br>Extend <code>TestPlayHead</code> with optional BPM and PPQ, and extend <code>GranulatorEngineTestAccess</code> rather than exposing scheduler internals publicly. Keep the existing Free block-size and deterministic-render fixtures byte-for-byte comparable. Add a Release benchmark scenario for Sync at 64 lanes; measure it separately from correctness tests.</p>
         </div>
       </div>
     </section>
 
     <section id="tests">
       <div class="section-head">
-        <div class="section-kicker">04 / Acceptance</div>
+        <div class="section-kicker">05 / Acceptance</div>
         <h2>Prove timing, population, continuity, and preservation.</h2>
       </div>
       <div class="tests">
         <div class="test"><h3>Division timing</h3><p>All nine divisions and dotted ratios land sample-accurately across 1, 17, 64, changing, and non-power-of-two block sizes.</p></div>
         <div class="test"><h3>Lane geometry</h3><p>Density 1 and 64, Drift 0 and 1, exact first/last offsets, even interpolation, stable lane identity, and never more than 64 active grains.</p></div>
-        <div class="test"><h3>Source ownership</h3><p>One Tide-selected set per boundary; delayed lanes use their assigned anchors. Sync Drift produces no source-offset or playback-speed delta.</p></div>
-        <div class="test"><h3>Grid End</h3><p>On: every lane reaches silence at the shared boundary. Off: every lane lasts one full musical duration, crosses boundaries, and never overlaps itself.</p></div>
-        <div class="test"><h3>Automation</h3><p>Division, Density, Drift, and Grid End commit at their specified boundaries; full-tail division changes cut/re-articulate without duplicates; Drift exhibits exactly one cycle of formation latency.</p></div>
-        <div class="test"><h3>Transport + tempo</h3><p>Start, stop, resume, seek, loop wrap, tempo ramp, missing BPM/PPQ, and starting halfway through a division all follow the locked host rules.</p></div>
-        <div class="test"><h3>State + UI</h3><p>Defaults and round-trip state: Sync 0, division 1/8, Grid End 1. Attachments reflect automation and mode-dependent Size display without changing the Free Size value.</p></div>
+        <div class="test"><h3>Source ownership</h3><p>One Tide-selected set per boundary; delayed lanes use their exact assigned anchors. The seeded boundary/lane sequence repeats exactly across runs and block sizes. At five-second Time, maximum Drift, slow tempos, and the latest onset, source selection narrows to safe headroom and never reads overwritten audio. An empty safe window produces a silent cycle rather than a moved anchor. Sync Drift produces no source-offset or playback-speed delta.</p></div>
+        <div class="test"><h3>Grid End</h3><p>On: each delayed lane compresses its complete Shape envelope into its shortened lifetime and reaches silence at the shared boundary. Off: every lane lasts one full musical duration, crosses boundaries, and never overlaps itself.</p></div>
+        <div class="test"><h3>Automation</h3><p>Division, Density, Drift, and Grid End commit at their specified boundaries; simultaneous changes use one snapshot and the locked precedence; reversing either pending mode handoff cancels it without a stale transition; full-tail division changes cut/re-articulate without duplicates; Drift exhibits exactly one cycle of formation latency. Forced cuts traverse the one-millisecond smoother without adding a grain or history read.</p></div>
+        <div class="test"><h3>Transport + tempo</h3><p>Start, stop, resume, seek, loop wrap, tempo ramps represented by successive block snapshots, and starting halfway through a division all follow the locked host rules. Invalid clock from the outset schedules nothing. Stopped tails finish at the last valid BPM only while processing continues, with zero new events. Unexpected BPM/PPQ loss fades active Sync lanes; recovery re-anchors without clearing continuous history. Reported host tail covers slow synchronized durations.</p></div>
+        <div class="test"><h3>State + UI</h3><p>Defaults and round-trip state: Sync 0, division 1/8, Grid End 1. Loading legacy state without the new parameters supplies those defaults and preserves every existing value. Attachments reflect automation and mode-dependent Size display without changing the Free Size value; Free mode leaves Grid End visibly dimmed, disabled, and in place. Sync and Grid End tooltips explain host-clock and full-tail Drift timing without a status line.</p></div>
         <div class="test"><h3>Existing sound</h3><p>Free-mode renders remain unchanged. Tide range, Shape, Spread, Feedback, Mix, output ceiling, non-finite containment, and telemetry continue to pass their existing contracts.</p></div>
       </div>
     </section>
 
     <section id="open" class="open-section">
       <div class="section-head">
-        <div class="section-kicker" style="color: var(--coral)">05 / Before code</div>
-        <h2>Four decisions remain. Only one changes DSP.</h2>
+        <div class="section-kicker" style="color: var(--coral)">06 / Decisions</div>
+        <h2>The plan is resolved and ready for implementation.</h2>
       </div>
       <div class="ambiguities">
         <details open>
-          <summary><span class="issue-number">01 · DSP</span><strong>What does Shape do when Grid End shortens a delayed grain?</strong></summary>
-          <div class="issue-body">Choose between <b>compressing the complete Shape envelope</b> into <span class="mono">duration − offset</span>, or running the normal full-duration envelope and truncating/fading it at the boundary. <p class="recommendation">Recommendation: compress the complete envelope so every lane reaches its designed zero cleanly and Shape remains meaningful.</p></div>
-        </details>
-        <details>
-          <summary><span class="issue-number">02 · COPY</span><strong>Is “Grid End” the final user-facing name?</strong></summary>
-          <div class="issue-body">The behavior is locked; only the concise label remains. Alternatives include <b>Grid End</b>, <b>End at Grid</b>, or <b>Cut at Grid</b>. <p class="recommendation">Recommendation: “Grid End” is shortest and already established in this plan.</p></div>
-        </details>
-        <details>
-          <summary><span class="issue-number">03 · UI</span><strong>What remains visible while Sync is off?</strong></summary>
-          <div class="issue-body">The Size position must return to milliseconds. Decide whether Grid End is hidden or remains visible but disabled; the saved Sync division itself is necessarily hidden behind the Free Size display. <p class="recommendation">Recommendation: keep Grid End in place but dim and disable it, avoiding layout movement and showing that it belongs to Sync.</p></div>
-        </details>
-        <details>
-          <summary><span class="issue-number">04 · STATUS</span><strong>How much timing guidance belongs in the compact editor?</strong></summary>
-          <div class="issue-body">Two messages are required in principle: no valid clock, and the one-cycle Drift latency with Grid End off. Decide between a persistent micro-status line or tooltips only. <p class="recommendation">Recommendation: a single small contextual line—“WAITING FOR HOST CLOCK” when unavailable; “FULL TAIL · DRIFT LANDS NEXT CYCLE” only while relevant.</p></div>
+          <summary><span class="issue-number">LOCKED · UI</span><strong>Compact controls, without persistent status chrome.</strong></summary>
+          <div class="issue-body"><b>Grid End</b> is the final label and remains visible, dimmed, and disabled while Sync is off. The Sync tooltip explains that a valid host clock is required; the Grid End tooltip explains that Drift changes land on the next cycle in Full Tail mode. Shape compresses its complete envelope into shortened Grid End lanes. Source selection reserves enough history headroom for the latest delayed onset and uses deterministic boundary/lane assignment. Stopped grains finish from the last valid BPM without scheduling events; unexpected clock loss safety-releases them. Latest mode automation cancels any uncommitted opposite handoff, and every forced cut uses the fixed one-millisecond per-lane smoother.</div>
         </details>
       </div>
     </section>
 
     <section id="non-goals">
       <div class="section-head">
-        <div class="section-kicker">06 / Non-goals</div>
+        <div class="section-kicker">07 / Non-goals</div>
         <h2>Explicitly outside this integration.</h2>
       </div>
       <div class="non-goals">
-        <div class="non-goal"><b>No internal BPM</b>No tap tempo, standalone clock, MIDI clock, or fallback transport.</div>
+        <div class="non-goal"><b>No internal event clock</b>No tap tempo, standalone clock, MIDI clock, or fallback boundary scheduler. Cached host BPM may retire already-active stopped tails only.</div>
         <div class="non-goal"><b>No more divisions</b>No triplets, custom ratios, groove templates, or swing control.</div>
         <div class="non-goal"><b>No new sound dimensions</b>No pitch control, new source randomization, freeze, or extra Drift timbre behavior.</div>
         <div class="non-goal"><b>No enlarged voice pool</b>No transition voices, self-overlap, or 127-grain workaround.</div>

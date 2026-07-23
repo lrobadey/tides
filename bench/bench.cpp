@@ -19,7 +19,8 @@ Result runScenario(const float density,
                    const int sampleRate,
                    const int blockSize,
                    const int channels,
-                   const long timedBlocks)
+                   const long timedBlocks,
+                   const bool sync = false)
 {
     GranulatorEngine engine;
     engine.prepare(sampleRate, blockSize, channels, 0.5f, 0.3f, 0.6f, 0.3f);
@@ -35,6 +36,13 @@ Result runScenario(const float density,
     controls.feedback = 0.3f;
     controls.tide = 0.6f;
     controls.drift = 0.3f;
+    controls.sync = sync;
+    controls.syncDivision = 4;
+    controls.gridEnd = true;
+    GranulatorEngine::Timing timing;
+    timing.clockValid = sync;
+    timing.playing = sync;
+    timing.bpm = 120.0;
 
     // A fixed reference input block copied in fresh each iteration, mimicking a
     // host handing us a new buffer.
@@ -53,7 +61,9 @@ Result runScenario(const float density,
     {
         for (int ch = 0; ch < channels; ++ch)
             buffer.copyFrom(ch, 0, reference, ch, 0, blockSize);
-        engine.process(buffer, controls);
+        engine.process(buffer, controls, timing);
+        timing.ppqPosition += static_cast<double>(blockSize) * timing.bpm
+            / (60.0 * static_cast<double>(sampleRate));
     }
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -61,7 +71,9 @@ Result runScenario(const float density,
     {
         for (int ch = 0; ch < channels; ++ch)
             buffer.copyFrom(ch, 0, reference, ch, 0, blockSize);
-        engine.process(buffer, controls);
+        engine.process(buffer, controls, timing);
+        timing.ppqPosition += static_cast<double>(blockSize) * timing.bpm
+            / (60.0 * static_cast<double>(sampleRate));
     }
     auto end = std::chrono::high_resolution_clock::now();
 
@@ -100,5 +112,9 @@ int main()
         std::printf("%-10.0f %12.3f ns %15.2f %%\n",
                     density, best.nsPerSample, best.realtimeFraction * 100.0);
     }
+    const auto sync = runScenario(64.0f, sampleRate, blockSize, channels,
+                                  timedBlocks, true);
+    std::printf("sync-64    %12.3f ns %15.2f %%\n",
+                sync.nsPerSample, sync.realtimeFraction * 100.0);
     return 0;
 }

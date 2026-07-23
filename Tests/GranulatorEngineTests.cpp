@@ -58,6 +58,21 @@ struct GranulatorEngineTestAccess
         return engine.birthOrdinal;
     }
 
+    static bool syncActive(const GranulatorEngine& engine) noexcept
+    {
+        return engine.syncState.active && ! engine.syncState.awaitingBoundary;
+    }
+
+    static int syncDensity(const GranulatorEngine& engine) noexcept
+    {
+        return engine.syncState.density;
+    }
+
+    static double laneOffset(const GranulatorEngine& engine, const int lane) noexcept
+    {
+        return engine.syncState.lanes[static_cast<size_t>(lane)].offsetPpq;
+    }
+
     static int requestedLengthInSamples(const GranulatorEngine& engine,
                                         const GranulatorEngine::Controls& controls) noexcept
     {
@@ -161,17 +176,34 @@ public:
         isPlaying = playing;
     }
 
+    void setClock(const double newBpm, const double newPpq) noexcept
+    {
+        bpm = newBpm;
+        ppq = newPpq;
+        hasClock = true;
+    }
+
+    void clearClock() noexcept { hasClock = false; }
+
     juce::Optional<PositionInfo> getPosition() const override
     {
         PositionInfo position;
         position.setTimeInSamples(samplePosition);
         position.setIsPlaying(isPlaying);
+        if (hasClock)
+        {
+            position.setBpm(bpm);
+            position.setPpqPosition(ppq);
+        }
         return position;
     }
 
 private:
     std::int64_t samplePosition = 0;
     bool isPlaying = false;
+    double bpm = 120.0;
+    double ppq = 0.0;
+    bool hasClock = false;
 };
 
 bool drySignalPassesThrough()
@@ -2159,6 +2191,133 @@ bool processorStateRestoresGranularControls()
         && restored.parameters.state.getProperty("randomSeed").toString()
             == source.parameters.state.getProperty("randomSeed").toString();
 }
+
+bool syncParametersHaveLockedDefaultsAndLegacyMigration()
+{
+    TideGrainsAudioProcessor source;
+    const auto value = [&source](const char* id)
+    {
+        return source.parameters.getRawParameterValue(id)->load();
+    };
+    if (value(tide::parameter::sync) != 0.0f
+        || value(tide::parameter::syncDivision) != 4.0f
+        || value(tide::parameter::gridEnd) != 1.0f)
+        return false;
+
+    auto legacy = source.parameters.copyState();
+    for (auto index = legacy.getNumChildren(); --index >= 0;)
+    {
+        const auto id = legacy.getChild(index).getProperty("id").toString();
+        if (id == tide::parameter::sync || id == tide::parameter::syncDivision
+            || id == tide::parameter::gridEnd)
+            legacy.removeChild(index, nullptr);
+    }
+    juce::MemoryBlock data;
+    if (auto xml = legacy.createXml())
+        juce::AudioProcessor::copyXmlToBinary(*xml, data);
+
+    TideGrainsAudioProcessor restored;
+    restored.parameters.getParameter(tide::parameter::sync)->setValueNotifyingHost(1.0f);
+    restored.parameters.getParameter(tide::parameter::syncDivision)->setValueNotifyingHost(0.0f);
+    restored.parameters.getParameter(tide::parameter::gridEnd)->setValueNotifyingHost(0.0f);
+    restored.setStateInformation(data.getData(), static_cast<int>(data.getSize()));
+    return restored.parameters.getRawParameterValue(tide::parameter::sync)->load() == 0.0f
+        && restored.parameters.getRawParameterValue(tide::parameter::syncDivision)->load() == 4.0f
+        && restored.parameters.getRawParameterValue(tide::parameter::gridEnd)->load() == 1.0f;
+}
+
+bool syncRequiresHostClockAndBuildsPersistentLaneGeometry()
+{
+    constexpr double sampleRate = 48000.0;
+    tide::GranulatorEngine engine;
+    engine.prepare(sampleRate, 64, 2, 0.5f);
+    juce::AudioBuffer<float> buffer(2, 64);
+    tide::GranulatorEngine::Controls freeControls;
+    freeControls.mix = 0.0f;
+    for (auto block = 0; block < 800; ++block)
+    {
+        buffer.clear();
+        engine.process(buffer, freeControls);
+    }
+
+    tide::GranulatorEngine::Controls controls;
+    controls.sync = true;
+    controls.syncDivision = 4;
+    controls.gridEnd = true;
+    controls.density = 4.0f;
+    controls.drift = 1.0f;
+    const auto birthsBefore = tide::GranulatorEngineTestAccess::birthsStarted(engine);
+    tide::GranulatorEngine::Timing missingClock;
+    missingClock.playing = true;
+    for (auto block = 0; block < 8; ++block)
+    {
+        buffer.clear();
+        engine.process(buffer, controls, missingClock);
+    }
+    if (tide::GranulatorEngineTestAccess::birthsStarted(engine) != birthsBefore)
+        return false;
+
+    tide::GranulatorEngine::Timing timing;
+    timing.clockValid = true;
+    timing.playing = true;
+    timing.bpm = 120.0;
+    timing.ppqPosition = 0.49;
+    for (auto block = 0; block < 12; ++block)
+    {
+        buffer.clear();
+        engine.process(buffer, controls, timing);
+        timing.ppqPosition += 64.0 * timing.bpm / (60.0 * sampleRate);
+    }
+
+    return tide::GranulatorEngineTestAccess::syncActive(engine)
+        && tide::GranulatorEngineTestAccess::syncDensity(engine) == 4
+        && std::abs(tide::GranulatorEngineTestAccess::laneOffset(engine, 0)) < 1.0e-12
+        && std::abs(tide::GranulatorEngineTestAccess::laneOffset(engine, 3) - 0.1) < 1.0e-9
+        && tide::GranulatorEngineTestAccess::activeCount(engine)
+            <= tide::GranulatorEngine::maximumGrains;
+}
+
+bool disablingSyncWithoutRunningClockRestoresFreeMode()
+{
+    constexpr double sampleRate = 48000.0;
+    tide::GranulatorEngine engine;
+    engine.prepare(sampleRate, 64, 2, 0.5f);
+    juce::AudioBuffer<float> buffer(2, 64);
+
+    tide::GranulatorEngine::Controls controls;
+    controls.sync = true;
+    controls.syncDivision = 4;
+    controls.density = 4.0f;
+    tide::GranulatorEngine::Timing timing;
+    timing.clockValid = true;
+    timing.playing = true;
+    timing.bpm = 120.0;
+    timing.ppqPosition = 0.0;
+    for (auto block = 0; block < 800; ++block)
+    {
+        buffer.clear();
+        engine.process(buffer, controls, timing);
+        timing.ppqPosition += 64.0 * timing.bpm / (60.0 * sampleRate);
+    }
+    if (! tide::GranulatorEngineTestAccess::syncActive(engine))
+        return false;
+
+    // Disable Sync while the transport is stopped: the handoff must not wait
+    // for a boundary that can never arrive.
+    controls.sync = false;
+    tide::GranulatorEngine::Timing stopped;
+    stopped.playing = false;
+    stopped.clockValid = false;
+    stopped.bpm = 120.0;
+    const auto birthsBefore = tide::GranulatorEngineTestAccess::birthsStarted(engine);
+    for (auto block = 0; block < 200; ++block)
+    {
+        buffer.clear();
+        engine.process(buffer, controls, stopped);
+    }
+    return ! tide::GranulatorEngineTestAccess::syncActive(engine)
+        && tide::GranulatorEngineTestAccess::birthsStarted(engine) > birthsBefore;
+}
 } // namespace
 
 int main()
@@ -2390,6 +2549,24 @@ int main()
     if (!processorStateRestoresGranularControls())
     {
         std::cerr << "Processor state test failed\n";
+        return 1;
+    }
+
+    if (!syncParametersHaveLockedDefaultsAndLegacyMigration())
+    {
+        std::cerr << "Sync parameter/state migration test failed\n";
+        return 1;
+    }
+
+    if (!syncRequiresHostClockAndBuildsPersistentLaneGeometry())
+    {
+        std::cerr << "Sync host-clock/lane geometry test failed\n";
+        return 1;
+    }
+
+    if (!disablingSyncWithoutRunningClockRestoresFreeMode())
+    {
+        std::cerr << "Sync disable-without-clock handoff test failed\n";
         return 1;
     }
 

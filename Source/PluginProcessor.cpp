@@ -4,6 +4,8 @@
 #include "PluginEditor.h"
 
 #include <cstdlib>
+#include <array>
+#include <cmath>
 
 namespace
 {
@@ -31,6 +33,9 @@ TideGrainsAudioProcessor::TideGrainsAudioProcessor()
     timeParameter = parameters.getRawParameterValue(tide::parameter::time);
     tideParameter = parameters.getRawParameterValue(tide::parameter::tide);
     sizeParameter = parameters.getRawParameterValue(tide::parameter::size);
+    syncParameter = parameters.getRawParameterValue(tide::parameter::sync);
+    syncDivisionParameter = parameters.getRawParameterValue(tide::parameter::syncDivision);
+    gridEndParameter = parameters.getRawParameterValue(tide::parameter::gridEnd);
     densityParameter = parameters.getRawParameterValue(tide::parameter::density);
     shapeParameter = parameters.getRawParameterValue(tide::parameter::shape);
     spreadParameter = parameters.getRawParameterValue(tide::parameter::spread);
@@ -43,6 +48,9 @@ TideGrainsAudioProcessor::TideGrainsAudioProcessor()
     jassert(timeParameter != nullptr);
     jassert(tideParameter != nullptr);
     jassert(sizeParameter != nullptr);
+    jassert(syncParameter != nullptr);
+    jassert(syncDivisionParameter != nullptr);
+    jassert(gridEndParameter != nullptr);
     jassert(densityParameter != nullptr);
     jassert(shapeParameter != nullptr);
     jassert(spreadParameter != nullptr);
@@ -86,6 +94,8 @@ void TideGrainsAudioProcessor::prepareToPlay(const double sampleRate,
     grainSnapshots.publish(grainFrameScratch);
     expectedHostSample.reset();
     hostWasPlaying = false;
+    lastPlayingBpm = 0.0;
+    synchronizedTailSeconds.store(5.0, std::memory_order_relaxed);
 }
 
 void TideGrainsAudioProcessor::releaseResources()
@@ -124,6 +134,7 @@ void TideGrainsAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         buffer.clear(channel, 0, buffer.getNumSamples());
     }
 
+    tide::GranulatorEngine::Timing timing;
     if (auto* playHead = getPlayHead())
     {
         if (auto position = playHead->getPosition())
@@ -141,6 +152,30 @@ void TideGrainsAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 ++displayGeneration;
                 waveformHistory.reset(displayGeneration);
             }
+
+            const auto bpm = position->getBpm();
+            const auto ppq = position->getPpqPosition();
+            const auto validClock = bpm.hasValue() && ppq.hasValue()
+                && std::isfinite(*bpm) && *bpm > 0.0 && std::isfinite(*ppq);
+            timing.playing = isPlaying;
+            timing.clockValid = validClock;
+            timing.discontinuity = discontinuity;
+            timing.ppqPosition = ppq.orFallback(0.0);
+            if (validClock)
+            {
+                timing.bpm = *bpm;
+                if (isPlaying)
+                    lastPlayingBpm = *bpm;
+                const auto division = juce::jlimit(0, 8,
+                    static_cast<int>(std::round(syncDivisionParameter->load())));
+                constexpr std::array<int, 9> ticks { 2, 3, 4, 6, 8, 12, 16, 24, 32 };
+                const auto durationSeconds = (static_cast<double>(ticks[static_cast<size_t>(division)])
+                    / 16.0) * 60.0 / *bpm;
+                synchronizedTailSeconds.store(juce::jmax(5.0, durationSeconds),
+                                              std::memory_order_relaxed);
+            }
+            else if (! isPlaying)
+                timing.bpm = lastPlayingBpm;
 
             // While stopped the host reports a frozen position, which must not
             // register as an endless seek once playback resumes.
@@ -161,7 +196,10 @@ void TideGrainsAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         spreadParameter->load(),
         feedbackParameter->load(),
         tideParameter->load(),
-        driftParameter->load()
+        driftParameter->load(),
+        syncParameter->load() >= 0.5f,
+        static_cast<int>(std::round(syncDivisionParameter->load())),
+        gridEndParameter->load() >= 0.5f
     };
 
     applySmoothedGain(buffer,
@@ -173,6 +211,7 @@ void TideGrainsAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         >= static_cast<size_t>(buffer.getNumSamples());
     granulator.process(buffer,
                        controls,
+                       timing,
                        canCaptureHistory ? internalHistoryTap.data() : nullptr,
                        canCaptureHistory ? static_cast<int>(internalHistoryTap.size()) : 0);
     if (canCaptureHistory)
@@ -253,7 +292,7 @@ bool TideGrainsAudioProcessor::isMidiEffect() const
 
 double TideGrainsAudioProcessor::getTailLengthSeconds() const
 {
-    return 5.0;
+    return synchronizedTailSeconds.load(std::memory_order_relaxed);
 }
 
 int TideGrainsAudioProcessor::getNumPrograms()
@@ -299,7 +338,24 @@ void TideGrainsAudioProcessor::setStateInformation(const void* data,
     {
         if (xml->hasTagName(parameters.state.getType()))
         {
-            parameters.replaceState(juce::ValueTree::fromXml(*xml));
+            auto restored = juce::ValueTree::fromXml(*xml);
+            const auto addMissingParameter = [&restored](const juce::String& id,
+                                                         const float defaultValue)
+            {
+                for (auto child : restored)
+                {
+                    if (child.hasType("PARAM") && child.getProperty("id") == id)
+                        return;
+                }
+                juce::ValueTree child("PARAM");
+                child.setProperty("id", id, nullptr);
+                child.setProperty("value", defaultValue, nullptr);
+                restored.appendChild(child, nullptr);
+            };
+            addMissingParameter(tide::parameter::sync, 0.0f);
+            addMissingParameter(tide::parameter::syncDivision, 4.0f);
+            addMissingParameter(tide::parameter::gridEnd, 1.0f);
+            parameters.replaceState(restored);
 
             const auto seed = parameters.state.getProperty("randomSeed");
             if (! seed.isVoid())
@@ -338,6 +394,14 @@ TideGrainsAudioProcessor::createParameterLayout()
     layout.add(std::make_unique<Parameter>(
         juce::ParameterID { tide::parameter::size, 1 }, "Size", sizeRange, 40.0f,
         juce::AudioParameterFloatAttributes().withLabel("ms")));
+    layout.add(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID { tide::parameter::sync, 1 }, "Sync", false));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID { tide::parameter::syncDivision, 1 }, "Sync Division",
+        juce::StringArray { "1/32", "1/32.", "1/16", "1/16.", "1/8", "1/8.",
+                            "1/4", "1/4.", "1/2" }, 4));
+    layout.add(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID { tide::parameter::gridEnd, 1 }, "Grid End", true));
     layout.add(std::make_unique<Parameter>(
         juce::ParameterID { tide::parameter::density, 1 }, "Density", densityRange, 10.0f,
         juce::AudioParameterFloatAttributes().withLabel("grains")));

@@ -25,6 +25,18 @@ public:
         float feedback = 0.0f;
         float tide = 0.0f;
         float drift = 0.2f;
+        bool sync = false;
+        int syncDivision = 4;
+        bool gridEnd = true;
+    };
+
+    struct Timing
+    {
+        double bpm = 0.0;
+        double ppqPosition = 0.0;
+        bool clockValid = false;
+        bool playing = false;
+        bool discontinuity = false;
     };
 
     struct GrainVisualState
@@ -36,6 +48,7 @@ public:
         float pan = 0.0f;
         int ageInSamples = 0;
         int lengthInSamples = 0;
+        float lifeProgress = 0.0f;
     };
 
     struct VisualFrame
@@ -61,8 +74,16 @@ public:
     void setRandomSeed(std::uint64_t seed) noexcept;
     void process(juce::AudioBuffer<float>& buffer,
                  const Controls& controls,
+                 const Timing& timing,
                  float* internalHistoryTap = nullptr,
                  int internalHistoryTapCapacity = 0) noexcept;
+    void process(juce::AudioBuffer<float>& buffer,
+                 const Controls& controls,
+                 float* internalHistoryTap = nullptr,
+                 int internalHistoryTapCapacity = 0) noexcept
+    {
+        process(buffer, controls, {}, internalHistoryTap, internalHistoryTapCapacity);
+    }
     void getVisualFrame(VisualFrame& destination) const noexcept;
 
 private:
@@ -85,6 +106,50 @@ private:
         int lengthInSamples = 0;
         bool active = false;
         bool hasReadableSource = false;
+        bool syncVoice = false;
+        double lifeProgress = 0.0;
+        double lifetimePpq = 0.0;
+        int releaseSamplesRemaining = 0;
+        int releaseSamplesTotal = 0;
+        float lastOutputLeft = 0.0f;
+        float lastOutputRight = 0.0f;
+    };
+
+    struct SyncState
+    {
+        struct Lane
+        {
+            double offsetPpq = 0.0;
+            double onsetPpq = 0.0;
+            std::int64_t sourceAnchorSample = 0;
+            bool anchorValid = false;
+            bool onsetPending = false;
+        };
+        // Holds only the cut voice's final output level while it decays over
+        // one millisecond; it never reads history or occupies a grain slot.
+        struct CutTail
+        {
+            float levelLeft = 0.0f;
+            float levelRight = 0.0f;
+            int samplesRemaining = 0;
+            int samplesTotal = 0;
+        };
+        std::array<Lane, maximumGrains> lanes {};
+        std::array<CutTail, maximumGrains> cutTails {};
+        int activeCutTails = 0;
+        double phaseOriginPpq = 0.0;
+        double nextBoundaryPpq = 0.0;
+        double durationPpq = 0.5;
+        std::uint64_t boundaryOrdinal = 0;
+        int density = 1;
+        int division = 4;
+        float drift = 0.0f;
+        bool gridEnd = true;
+        bool active = false;
+        bool awaitingBoundary = false;
+        bool clockWasValid = false;
+        bool wasPlaying = false;
+        bool disabling = false;
     };
 
     void reconcilePopulation(const Controls& controls) noexcept;
@@ -103,6 +168,11 @@ private:
     static float roundedSawEnvelope(float phase) noexcept;
     static float grainEnvelope(float phase, float shape) noexcept;
     float readHistorySample(const float* channelData, double position) const noexcept;
+    void processSyncEvents(const Controls&, const Timing&, double currentPpq) noexcept;
+    void commitSyncBoundary(const Controls&, double boundaryPpq, double bpm) noexcept;
+    bool beginSyncLane(int laneIndex, const Controls&, double bpm) noexcept;
+    void releaseAllSyncVoices() noexcept;
+    static double divisionPpq(int division) noexcept;
 
     juce::AudioBuffer<float> history;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mixSmoother;
@@ -124,5 +194,6 @@ private:
     int targetPopulation = 0;
     std::uint64_t birthOrdinal = 0;
     std::uint64_t randomSeed = 0x4d595df4d0f33173ULL;
+    SyncState syncState;
 };
 } // namespace tide

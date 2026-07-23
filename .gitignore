@@ -1,5 +1,6 @@
 .DS_Store
-build/
-bench/build/
-cmake-build-*/
-
+/build/
+/build-*/
+/bench/build/
+/cmake-build-*/
+/demos/
