@@ -31,7 +31,7 @@ public:
 
 private:
     static constexpr int displayBucketsPerSecond = 2000;
-    static constexpr int maximumSeconds = 5;
+    static constexpr int maximumSeconds = 15;
     static constexpr int bucketCapacity = displayBucketsPerSecond * maximumSeconds + 2;
 
     std::unique_ptr<std::atomic<float>[]> minima;

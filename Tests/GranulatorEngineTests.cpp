@@ -1439,9 +1439,17 @@ bool waveformWindowFillsEveryColumnAndTracksTime()
 
     std::vector<juce::Range<float>> longWindow;
     history.readWindow(longWindow, 40, 0.2f);
-    return longWindow.size() == 40
-        && approximatelyEqual(longWindow.front().getStart(), 0.25f)
-        && approximatelyEqual(longWindow.back().getEnd(), -0.75f);
+    if (longWindow.size() != 40
+        || ! approximatelyEqual(longWindow.front().getStart(), 0.25f)
+        || ! approximatelyEqual(longWindow.back().getEnd(), -0.75f))
+    {
+        return false;
+    }
+
+    std::vector<juce::Range<float>> maximumWindow;
+    const auto maximumInfo = history.readWindow(maximumWindow, 40, 15.0f);
+    return maximumWindow.size() == 40
+        && approximatelyEqual(static_cast<float>(maximumInfo.visibleSampleCount), 15000.0f);
 }
 
 bool waveformWindowPreservesItsAbsoluteHistoryCoordinates()
@@ -2143,6 +2151,7 @@ bool processorStateRestoresGranularControls()
     };
 
     if (!setParameter(tide::parameter::density, 57.0f)
+        || !setParameter(tide::parameter::wind, 0.73f)
         || !setParameter(tide::parameter::shape, 0.17f)
         || !setParameter(tide::parameter::spread, 0.83f)
         || !setParameter(tide::parameter::tide, 0.64f)
@@ -2165,6 +2174,7 @@ bool processorStateRestoresGranularControls()
         return parameter != nullptr && std::abs(parameter->load() - expected) < 1.0e-4f;
     };
     return matches(tide::parameter::density, 57.0f)
+        && matches(tide::parameter::wind, 0.73f)
         && matches(tide::parameter::shape, 0.17f)
         && matches(tide::parameter::spread, 0.83f)
         && matches(tide::parameter::tide, 0.64f)
@@ -2185,7 +2195,8 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     };
     if (value(tide::parameter::sync) != 0.0f
         || value(tide::parameter::syncDivision) != 4.0f
-        || value(tide::parameter::gridEnd) != 1.0f)
+        || value(tide::parameter::gridEnd) != 1.0f
+        || value(tide::parameter::wind) != 0.5f)
         return false;
 
     auto legacy = source.parameters.copyState();
@@ -2193,7 +2204,7 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     {
         const auto id = legacy.getChild(index).getProperty("id").toString();
         if (id == tide::parameter::sync || id == tide::parameter::syncDivision
-            || id == tide::parameter::gridEnd)
+            || id == tide::parameter::gridEnd || id == tide::parameter::wind)
             legacy.removeChild(index, nullptr);
     }
     juce::MemoryBlock data;
@@ -2204,10 +2215,12 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     restored.parameters.getParameter(tide::parameter::sync)->setValueNotifyingHost(1.0f);
     restored.parameters.getParameter(tide::parameter::syncDivision)->setValueNotifyingHost(0.0f);
     restored.parameters.getParameter(tide::parameter::gridEnd)->setValueNotifyingHost(0.0f);
+    restored.parameters.getParameter(tide::parameter::wind)->setValueNotifyingHost(0.0f);
     restored.setStateInformation(data.getData(), static_cast<int>(data.getSize()));
     return restored.parameters.getRawParameterValue(tide::parameter::sync)->load() == 0.0f
         && restored.parameters.getRawParameterValue(tide::parameter::syncDivision)->load() == 4.0f
-        && restored.parameters.getRawParameterValue(tide::parameter::gridEnd)->load() == 1.0f;
+        && restored.parameters.getRawParameterValue(tide::parameter::gridEnd)->load() == 1.0f
+        && restored.parameters.getRawParameterValue(tide::parameter::wind)->load() == 0.5f;
 }
 
 bool syncRequiresHostClockAndBuildsPersistentLaneGeometry()
