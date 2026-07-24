@@ -79,6 +79,14 @@ struct GranulatorEngineTestAccess
         return engine.requestedLengthInSamples(controls);
     }
 
+    static float envelope(const float phase,
+                          const float shape,
+                          const float shift,
+                          const float edgeFadePhase = 0.02f) noexcept
+    {
+        return GranulatorEngine::evaluateEnvelope(phase, shape, shift, edgeFadePhase);
+    }
+
     static std::vector<VoiceState> voiceStates(const GranulatorEngine& engine)
     {
         std::vector<VoiceState> result;
@@ -136,7 +144,7 @@ struct GranulatorEngineTestAccess
             const auto denominator = juce::jmax(1, grain.lengthInSamples - 1);
             const auto phase = static_cast<float>(grain.ageInSamples)
                 / static_cast<float>(denominator);
-            const auto expectedEnvelope = GranulatorEngine::grainEnvelope(
+            const auto expectedEnvelope = GranulatorEngine::evaluateEnvelope(
                 phase, grain.shapeAtBirth);
             const auto& visual = frame.grains[static_cast<size_t>(frameIndex++)];
             if (visual.eventId != grain.eventId
@@ -2068,6 +2076,44 @@ bool shapeMorphChangesTheGrainEnvelope()
     });
 }
 
+bool envelopePhaseRotatesTheShapeWithoutRemappingIt()
+{
+    using Access = tide::GranulatorEngineTestAccess;
+    for (const auto shape : { 0.0f, 0.5f, 1.0f })
+        for (const auto shift : { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f })
+            if (! approximatelyEqual(Access::envelope(0.0f, shape, shift), 0.0f)
+                || ! approximatelyEqual(Access::envelope(1.0f, shape, shift), 0.0f))
+                return false;
+
+    for (const auto shape : { 0.0f, 0.5f, 1.0f })
+    {
+        for (const auto shift : { -1.0f, -0.65f, -0.2f, 0.2f, 0.65f, 1.0f })
+        {
+            const auto rotation = shift * 0.5f;
+            for (auto index = 1; index < 1000; ++index)
+            {
+                const auto grainPhase = static_cast<float>(index) / 1000.0f;
+                auto sourcePhase = grainPhase + rotation;
+                sourcePhase -= std::floor(sourcePhase);
+                const auto rotated = Access::envelope(grainPhase, shape, shift, 0.0f);
+                const auto unchangedShape = Access::envelope(
+                    sourcePhase, shape, 0.0f, 0.0f);
+                if (std::abs(rotated - unchangedShape) > 1.0e-6f)
+                    return false;
+            }
+        }
+    }
+
+    for (auto index = 0; index <= 100; ++index)
+    {
+        const auto phase = static_cast<float>(index) / 100.0f;
+        const auto expected = std::sin(juce::MathConstants<float>::pi * phase);
+        if (std::abs(Access::envelope(phase, 1.0f, 0.0f) - expected) > 1.0e-5f)
+            return false;
+    }
+    return true;
+}
+
 bool spreadMovesStereoContentAcrossTheField()
 {
     tide::GranulatorEngine engine;
@@ -2153,6 +2199,7 @@ bool processorStateRestoresGranularControls()
     if (!setParameter(tide::parameter::density, 57.0f)
         || !setParameter(tide::parameter::wind, 0.73f)
         || !setParameter(tide::parameter::shape, 0.17f)
+        || !setParameter(tide::parameter::envelopePhase, -0.44f)
         || !setParameter(tide::parameter::spread, 0.83f)
         || !setParameter(tide::parameter::tide, 0.64f)
         || !setParameter(tide::parameter::drift, 0.42f)
@@ -2176,6 +2223,7 @@ bool processorStateRestoresGranularControls()
     return matches(tide::parameter::density, 57.0f)
         && matches(tide::parameter::wind, 0.73f)
         && matches(tide::parameter::shape, 0.17f)
+        && matches(tide::parameter::envelopePhase, -0.44f)
         && matches(tide::parameter::spread, 0.83f)
         && matches(tide::parameter::tide, 0.64f)
         && matches(tide::parameter::drift, 0.42f)
@@ -2193,18 +2241,28 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     {
         return source.parameters.getRawParameterValue(id)->load();
     };
-    if (value(tide::parameter::sync) != 0.0f
-        || value(tide::parameter::syncDivision) != 4.0f
-        || value(tide::parameter::gridEnd) != 1.0f
-        || value(tide::parameter::wind) != 0.5f)
+    const auto defaultSync = value(tide::parameter::sync);
+    const auto defaultDivision = value(tide::parameter::syncDivision);
+    const auto defaultGridEnd = value(tide::parameter::gridEnd);
+    const auto defaultWind = value(tide::parameter::wind);
+    const auto defaultPhase = value(tide::parameter::envelopePhase);
+    if (defaultSync != 0.0f || defaultDivision != 4.0f || defaultGridEnd != 1.0f
+        || defaultWind != 0.5f || ! approximatelyEqual(defaultPhase, 0.0f))
+    {
+        std::cerr << "Parameter defaults: sync=" << defaultSync
+                  << ", division=" << defaultDivision
+                  << ", gridEnd=" << defaultGridEnd << ", wind=" << defaultWind
+                  << ", phase=" << defaultPhase << '\n';
         return false;
+    }
 
     auto legacy = source.parameters.copyState();
     for (auto index = legacy.getNumChildren(); --index >= 0;)
     {
         const auto id = legacy.getChild(index).getProperty("id").toString();
         if (id == tide::parameter::sync || id == tide::parameter::syncDivision
-            || id == tide::parameter::gridEnd || id == tide::parameter::wind)
+            || id == tide::parameter::gridEnd || id == tide::parameter::wind
+            || id == tide::parameter::envelopePhase)
             legacy.removeChild(index, nullptr);
     }
     juce::MemoryBlock data;
@@ -2216,11 +2274,24 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     restored.parameters.getParameter(tide::parameter::syncDivision)->setValueNotifyingHost(0.0f);
     restored.parameters.getParameter(tide::parameter::gridEnd)->setValueNotifyingHost(0.0f);
     restored.parameters.getParameter(tide::parameter::wind)->setValueNotifyingHost(0.0f);
+    restored.parameters.getParameter(tide::parameter::envelopePhase)
+        ->setValueNotifyingHost(1.0f);
     restored.setStateInformation(data.getData(), static_cast<int>(data.getSize()));
-    return restored.parameters.getRawParameterValue(tide::parameter::sync)->load() == 0.0f
-        && restored.parameters.getRawParameterValue(tide::parameter::syncDivision)->load() == 4.0f
-        && restored.parameters.getRawParameterValue(tide::parameter::gridEnd)->load() == 1.0f
-        && restored.parameters.getRawParameterValue(tide::parameter::wind)->load() == 0.5f;
+    const auto sync = restored.parameters.getRawParameterValue(tide::parameter::sync)->load();
+    const auto division = restored.parameters
+                              .getRawParameterValue(tide::parameter::syncDivision)->load();
+    const auto gridEnd = restored.parameters
+                             .getRawParameterValue(tide::parameter::gridEnd)->load();
+    const auto wind = restored.parameters.getRawParameterValue(tide::parameter::wind)->load();
+    const auto phase = restored.parameters
+                           .getRawParameterValue(tide::parameter::envelopePhase)->load();
+    const auto passes = sync == 0.0f && division == 4.0f && gridEnd == 1.0f
+        && wind == 0.5f && approximatelyEqual(phase, 0.0f);
+    if (! passes)
+        std::cerr << "Migrated defaults: sync=" << sync << ", division=" << division
+                  << ", gridEnd=" << gridEnd << ", wind=" << wind
+                  << ", phase=" << phase << '\n';
+    return passes;
 }
 
 bool syncRequiresHostClockAndBuildsPersistentLaneGeometry()
@@ -2586,6 +2657,12 @@ int main()
     if (!shapeMorphChangesTheGrainEnvelope())
     {
         std::cerr << "Shape envelope test failed\n";
+        return 1;
+    }
+
+    if (!envelopePhaseRotatesTheShapeWithoutRemappingIt())
+    {
+        std::cerr << "Envelope Phase rotation/boundary test failed\n";
         return 1;
     }
 

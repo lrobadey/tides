@@ -12,6 +12,7 @@ inline constexpr auto gridEnd = "gridEnd";
 inline constexpr auto density = "density";
 inline constexpr auto wind = "wind";
 inline constexpr auto shape = "shape";
+inline constexpr auto envelopePhase = "envelopePhase";
 inline constexpr auto spread = "spread";
 inline constexpr auto drift = "drift";
 inline constexpr auto feedback = "feedback";

@@ -36,6 +36,7 @@ public:
 
     void paint(juce::Graphics&) override;
     void resized() override;
+    void setEnvelopePreview(float shape, float phase);
 
 private:
     void sliderValueChanged(juce::Slider*) override;
@@ -142,6 +143,7 @@ public:
 private:
     void timerCallback() override;
     void applySyncMode(bool enabled);
+    void updateEnvelopePreviews();
     TidesLookAndFeel lookAndFeel;
     TideField tideField;
 
@@ -154,13 +156,14 @@ private:
     TideParameter density;
     TideParameter wind;
     TideParameter shape;
+    TideParameter phase;
     TideParameter spread;
     TideParameter drift;
     TideToggle sync;
     TideToggle gridEnd;
     TideParameter feedback;
 
-    std::array<juce::Component*, 8> lowerControls;
+    std::array<juce::Component*, 7> lowerControls;
     juce::TooltipWindow tooltipWindow { this, 500 };
     bool syncMode = false;
 
