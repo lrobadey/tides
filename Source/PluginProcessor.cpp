@@ -361,7 +361,10 @@ void TideGrainsAudioProcessor::setStateInformation(const void* data,
             addMissingParameter(tide::parameter::sync, 0.0f);
             addMissingParameter(tide::parameter::syncDivision, 4.0f);
             addMissingParameter(tide::parameter::gridEnd, 1.0f);
-            addMissingParameter(tide::parameter::wind, 0.5f);
+            // Pre-Wind sessions ran the old always-overlapping scheduler, where
+            // Density meant continuously sounding grains. Wind at 1.0 keeps each
+            // lane back-to-back, so those sessions retain their density.
+            addMissingParameter(tide::parameter::wind, 1.0f);
             addMissingParameter(tide::parameter::envelopePhase, 0.0f);
             parameters.replaceState(restored);
 

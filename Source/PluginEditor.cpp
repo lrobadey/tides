@@ -237,11 +237,11 @@ void TidesLookAndFeel::drawRotarySlider(juce::Graphics& g,
                                .withCentre(centre);
         juce::Path curve;
         juce::Path fill;
-        for (auto point = 0; point <= 36; ++point)
+        for (auto point = 0; point <= 72; ++point)
         {
-            const auto p = static_cast<float>(point) / 36.0f;
+            const auto p = static_cast<float>(point) / 72.0f;
             const auto value = tide::GranulatorEngine::evaluateEnvelope(
-                p, shape, 0.0f, 0.0f);
+                p, shape, envelopePhase);
             const juce::Point<float> plotted { graph.getX() + p * graph.getWidth(),
                                                graph.getBottom() - value * graph.getHeight() };
             if (point == 0)
@@ -260,8 +260,6 @@ void TidesLookAndFeel::drawRotarySlider(juce::Graphics& g,
         fill.closeSubPath();
 
         const auto neutralPeak = previewPeakPosition(shape, 0.0f);
-        auto currentPhase = envelopePhase * 0.5f;
-        currentPhase -= std::floor(currentPhase);
         g.setColour(foam.withAlpha(0.12f));
         g.drawHorizontalLine(juce::roundToInt(graph.getBottom()),
                              graph.getX(), graph.getRight());
@@ -280,11 +278,12 @@ void TidesLookAndFeel::drawRotarySlider(juce::Graphics& g,
                                                  juce::PathStrokeType::curved,
                                                  juce::PathStrokeType::rounded));
 
+        const auto peakPhase = previewPeakPosition(shape, envelopePhase);
         const auto peakPoint = juce::Point<float> {
-            graph.getX() + currentPhase * graph.getWidth(),
+            graph.getX() + peakPhase * graph.getWidth(),
             graph.getBottom()
                 - tide::GranulatorEngine::evaluateEnvelope(
-                    currentPhase, shape, 0.0f, 0.0f) * graph.getHeight()
+                    peakPhase, shape, envelopePhase) * graph.getHeight()
         };
         g.setColour(coral.withAlpha(0.48f));
         g.drawVerticalLine(juce::roundToInt(peakPoint.x), peakPoint.y, graph.getBottom());

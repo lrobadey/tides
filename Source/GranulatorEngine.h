@@ -192,6 +192,7 @@ private:
     static std::uint64_t hash(std::uint64_t value) noexcept;
     static float wrappedUnit(float value) noexcept;
     static float roundedSawEnvelope(float phase) noexcept;
+    static float edgeFadePhaseForLength(int lengthInSamples) noexcept;
     float readHistorySample(const float* channelData, double position) const noexcept;
     void processSyncEvents(const Controls&, const Timing&, double currentPpq) noexcept;
     void commitSyncBoundary(const Controls&, double boundaryPpq, double bpm) noexcept;

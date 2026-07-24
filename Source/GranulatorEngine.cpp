@@ -17,8 +17,11 @@ constexpr float maximumLifetimeVariation = 0.15f;
 constexpr float maximumEventTimingJitter = 0.15f;
 constexpr float maximumLaneRateSpread = 0.50f;
 constexpr float laneRateWalkStep = 0.035f;
+constexpr float minimumEdgeFadeSamples = 16.0f;
+constexpr float maximumEdgeFadeSamples = 64.0f;
+constexpr float edgeFadeProportion = 0.02f;
 constexpr float minimumTrailProportion = 0.015f;
-constexpr float maximumTrailProportion = 0.55f;
+constexpr float maximumTrailProportion = 1.0f;
 constexpr float maximumSourceDriftSeconds = 0.020f;
 constexpr float maximumSourceDriftWindowProportion = 0.02f;
 constexpr float goldenRatioConjugate = 0.61803398875f;
@@ -601,8 +604,7 @@ bool GranulatorEngine::beginSyncLane(const int laneIndex,
     grain.phaseScale = 1.0f / static_cast<float>(grain.lengthInSamples - 1);
     grain.shapeAtBirth = juce::jlimit(0.0f, 1.0f, controls.shape);
     grain.envelopePhaseAtBirth = juce::jlimit(-1.0f, 1.0f, controls.envelopePhase);
-    grain.envelopeEdgeFadePhase = juce::jmin(
-        0.02f, 64.0f / static_cast<float>(juce::jmax(2, grain.lengthInSamples)));
+    grain.envelopeEdgeFadePhase = edgeFadePhaseForLength(grain.lengthInSamples);
     grain.envelopeMassAtBirth = 0.5f
         + grain.shapeAtBirth * (2.0f / juce::MathConstants<float>::pi - 0.5f);
     grain.tideAtBirth = juce::jlimit(0.0f, 1.0f, controls.tide);
@@ -753,7 +755,19 @@ bool GranulatorEngine::beginOneShot(Grain& grain,
         + randomUnit(0, 31ULL));
     const auto trailProportion = minimumTrailProportion
         + (maximumTrailProportion - minimumTrailProportion) * smoothStep(tide);
-    const auto trailDelay = safeSpan * trailProportion * trailRank;
+    // A grain slower than the write head falls further behind it for its whole
+    // life, so a read starting at the oldest retained audio must leave that
+    // shortfall clear of the ring wrap point.
+    const auto lifetimeShortfall = juce::jmax(0.0, (1.0 - playbackSpeed)
+                                                       * static_cast<double>(length));
+    const auto maximumDelay = juce::jmax(static_cast<double>(minimumDelay),
+                                         static_cast<double>(availableWindow)
+                                             - lifetimeShortfall);
+    // Full Tide trails span from the centroid all the way back to the oldest
+    // safe sample, so the entire retained window stays reachable.
+    const auto trailSpan = juce::jmax(0.0, maximumDelay
+                                               - static_cast<double>(centroidDelay));
+    const auto trailDelay = trailSpan * static_cast<double>(trailProportion * trailRank);
     const auto maximumSourceDrift = juce::jmin(
         static_cast<float>(currentSampleRate * maximumSourceDriftSeconds),
         safeSpan * maximumSourceDriftWindowProportion);
@@ -761,8 +775,9 @@ bool GranulatorEngine::beginOneShot(Grain& grain,
         * maximumSourceDrift * clampedDrift;
     const auto delayInSamples = juce::jlimit(
         static_cast<double>(minimumDelay),
-        static_cast<double>(availableWindow),
-        static_cast<double>(centroidDelay + trailDelay + sourceDrift));
+        maximumDelay,
+        static_cast<double>(centroidDelay) + trailDelay
+            + static_cast<double>(sourceDrift));
 
     grain = {};
     grain.active = true;
@@ -774,8 +789,7 @@ bool GranulatorEngine::beginOneShot(Grain& grain,
     grain.phaseScale = 1.0f / static_cast<float>(juce::jmax(1, length - 1));
     grain.shapeAtBirth = juce::jlimit(0.0f, 1.0f, controls.shape);
     grain.envelopePhaseAtBirth = juce::jlimit(-1.0f, 1.0f, controls.envelopePhase);
-    grain.envelopeEdgeFadePhase = juce::jmin(
-        0.02f, 64.0f / static_cast<float>(juce::jmax(2, length)));
+    grain.envelopeEdgeFadePhase = edgeFadePhaseForLength(length);
     grain.envelopeMassAtBirth = 0.5f
         + grain.shapeAtBirth * (2.0f / juce::MathConstants<float>::pi - 0.5f);
     grain.tideAtBirth = juce::jlimit(0.0f, 1.0f, tide);
@@ -851,6 +865,16 @@ std::uint64_t GranulatorEngine::hash(const std::uint64_t value) noexcept
 float GranulatorEngine::wrappedUnit(const float value) noexcept
 {
     return value - std::floor(value);
+}
+
+float GranulatorEngine::edgeFadePhaseForLength(const int lengthInSamples) noexcept
+{
+    // The rotation safety fade stays proportionally short against the grain but
+    // never collapses below sixteen samples, which would reintroduce clicks.
+    const auto length = static_cast<float>(juce::jmax(2, lengthInSamples));
+    return juce::jlimit(minimumEdgeFadeSamples / length,
+                        maximumEdgeFadeSamples / length,
+                        edgeFadeProportion);
 }
 
 float GranulatorEngine::roundedSawEnvelope(const float phase) noexcept

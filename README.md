@@ -19,7 +19,7 @@ The plug-in now contains the integrated asynchronous granular-wave DSP:
 - Wind-controlled rests between lane articulations, with deterministic per-lane timing drift and no shared pulse
 - Size-defined nominal lifetimes: each grain plays once, releases, and never restarts
 - a slowly moving shared source centroid that keeps the captured input recognizable
-- Tide-controlled birth trails: low Tide stays close behind the centroid; high Tide spills farther into its wake
+- Tide-controlled birth trails: low Tide stays close behind the centroid; full Tide spills all the way back through the retained window
 - bounded, deterministic Drift in launch timing, source position, playback speed, and stereo placement
 - per-grain birth state that remains fixed until that grain finishes
 - stereo-preserving output with smoothed population normalisation for mostly steady aggregate loudness
@@ -37,7 +37,7 @@ centroid is calculated from those live read heads rather than animated separatel
 ## Initial controls
 
 - **Time**: selected buffer history, up to 15 seconds
-- **Tide**: distance that new births may trail the moving source centroid; low is tight, high is broad
+- **Tide**: distance that new births may trail the moving source centroid; low is tight, full reaches the oldest retained audio
 - **Size**: nominal lifetime of each one-shot grain, up to 5 seconds
 - **Density**: number of independent grain lanes, from 1 to 64
 - **Wind**: rest between grains relative to Size; calm leaves four grain lengths, halfway leaves one, and full Wind is back-to-back; inactive in Sync mode

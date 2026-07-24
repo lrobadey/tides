@@ -87,6 +87,11 @@ struct GranulatorEngineTestAccess
         return GranulatorEngine::evaluateEnvelope(phase, shape, shift, edgeFadePhase);
     }
 
+    static float edgeFadePhase(const int lengthInSamples) noexcept
+    {
+        return GranulatorEngine::edgeFadePhaseForLength(lengthInSamples);
+    }
+
     static std::vector<VoiceState> voiceStates(const GranulatorEngine& engine)
     {
         std::vector<VoiceState> result;
@@ -789,6 +794,62 @@ bool tideWidensSourceTrailWithoutChangingBirthTiming()
                   << ", high span " << highSpan
                   << ", centroid travel " << centroidTravel << '\n';
     return passes;
+}
+
+bool maximumTideReachesTheOldestRetainedAudio()
+{
+    // observeBirths runs a 0.5 s window at 1000 Hz, so the retained span is
+    // 500 samples. Full Tide must place births across the whole of it.
+    const auto births = observeBirths(1.0f, 0.0f, 0x0cea11ULL);
+    if (births.size() < 100)
+    {
+        std::cerr << "Tide reach births: " << births.size() << '\n';
+        return false;
+    }
+    auto deepestDelay = 0.0;
+    for (const auto& birth : births)
+    {
+        if (birth.sourceDelay > 500.0 + 1.0e-6)
+        {
+            std::cerr << "Tide reach beyond window: " << birth.sourceDelay << '\n';
+            return false;
+        }
+        deepestDelay = std::max(deepestDelay, birth.sourceDelay);
+    }
+    if (deepestDelay < 475.0)
+    {
+        std::cerr << "Tide reach deepest delay: " << deepestDelay << '\n';
+        return false;
+    }
+    return true;
+}
+
+bool firstGrainBeginsWithinTheSafetyMargin()
+{
+    tide::GranulatorEngine engine;
+    engine.prepare(48000.0, 64, 2, 1.0f);
+    tide::GranulatorEngine::Controls controls;
+    controls.timeSeconds = 15.0f;
+    controls.density = 8.0f;
+    juce::AudioBuffer<float> buffer(2, 1);
+    for (auto sample = 0; sample < 1000; ++sample)
+    {
+        buffer.setSample(0, 0, 0.2f);
+        buffer.setSample(1, 0, 0.2f);
+        engine.process(buffer, controls);
+        if (tide::GranulatorEngineTestAccess::birthsStarted(engine) > 0)
+        {
+            // The only startup wait is the 10 ms interpolation safety margin
+            // (480 samples at 48 kHz, plus a couple of samples of headroom for
+            // Drift speed deviation), even at maximum Time.
+            const auto latency = tide::GranulatorEngineTestAccess::timeline(engine);
+            if (latency > 484)
+                std::cerr << "First grain latency: " << latency << " samples\n";
+            return latency <= 484;
+        }
+    }
+    std::cerr << "First grain never started\n";
+    return false;
 }
 
 bool driftAddsBoundedBirthVariation()
@@ -2111,6 +2172,18 @@ bool envelopePhaseRotatesTheShapeWithoutRemappingIt()
         if (std::abs(Access::envelope(phase, 1.0f, 0.0f) - expected) > 1.0e-5f)
             return false;
     }
+
+    // The endpoint fade is 2% of the grain, floored at 16 samples so short
+    // grains cannot click and capped at 64 so long grains stay tight.
+    if (! approximatelyEqual(Access::edgeFadePhase(240), 16.0f / 240.0f)
+        || ! approximatelyEqual(Access::edgeFadePhase(3200), 0.02f)
+        || ! approximatelyEqual(Access::edgeFadePhase(240000), 64.0f / 240000.0f))
+    {
+        std::cerr << "Edge fade phases: " << Access::edgeFadePhase(240)
+                  << ", " << Access::edgeFadePhase(3200)
+                  << ", " << Access::edgeFadePhase(240000) << '\n';
+        return false;
+    }
     return true;
 }
 
@@ -2285,8 +2358,10 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     const auto wind = restored.parameters.getRawParameterValue(tide::parameter::wind)->load();
     const auto phase = restored.parameters
                            .getRawParameterValue(tide::parameter::envelopePhase)->load();
+    // Legacy states predate Wind's rests, so migration pins Wind to 1.0
+    // (back-to-back) to preserve the old always-overlapping density.
     const auto passes = sync == 0.0f && division == 4.0f && gridEnd == 1.0f
-        && wind == 0.5f && approximatelyEqual(phase, 0.0f);
+        && wind == 1.0f && approximatelyEqual(phase, 0.0f);
     if (! passes)
         std::cerr << "Migrated defaults: sync=" << sync << ", division=" << division
                   << ", gridEnd=" << gridEnd << ", wind=" << wind
@@ -2507,6 +2582,18 @@ int main()
     if (!tideWidensSourceTrailWithoutChangingBirthTiming())
     {
         std::cerr << "Tide source-trail test failed\n";
+        return 1;
+    }
+
+    if (!maximumTideReachesTheOldestRetainedAudio())
+    {
+        std::cerr << "Full-Tide window reach test failed\n";
+        return 1;
+    }
+
+    if (!firstGrainBeginsWithinTheSafetyMargin())
+    {
+        std::cerr << "First-grain latency test failed\n";
         return 1;
     }
 
