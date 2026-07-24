@@ -12,7 +12,8 @@ struct GranulatorEngineTestAccess;
 class GranulatorEngine
 {
 public:
-    static constexpr int maximumGrains = 64;
+    static constexpr int maximumLanes = 64;
+    static constexpr int maximumGrains = 128;
 
     struct Controls
     {
@@ -28,6 +29,7 @@ public:
         bool sync = false;
         int syncDivision = 4;
         bool gridEnd = true;
+        float activity = 0.5f;
     };
 
     struct Timing
@@ -107,12 +109,26 @@ private:
         bool active = false;
         bool hasReadableSource = false;
         bool syncVoice = false;
+        int sourceLane = -1;
         double lifeProgress = 0.0;
         double lifetimePpq = 0.0;
         int releaseSamplesRemaining = 0;
         int releaseSamplesTotal = 0;
         float lastOutputLeft = 0.0f;
         float lastOutputRight = 0.0f;
+    };
+
+    struct FreeState
+    {
+        struct Lane
+        {
+            double nextOnsetSample = 0.0;
+            float rateTendency = 1.0f;
+            std::uint64_t articulationOrdinal = 0;
+            bool active = false;
+        };
+        std::array<Lane, maximumLanes> lanes {};
+        int activeLaneCount = 0;
     };
 
     struct SyncState
@@ -134,8 +150,8 @@ private:
             int samplesRemaining = 0;
             int samplesTotal = 0;
         };
-        std::array<Lane, maximumGrains> lanes {};
-        std::array<CutTail, maximumGrains> cutTails {};
+        std::array<Lane, maximumLanes> lanes {};
+        std::array<CutTail, maximumLanes> cutTails {};
         int activeCutTails = 0;
         double phaseOriginPpq = 0.0;
         double nextBoundaryPpq = 0.0;
@@ -152,15 +168,18 @@ private:
         bool disabling = false;
     };
 
-    void reconcilePopulation(const Controls& controls) noexcept;
-    void scheduleBirths(const Controls& controls, float tide, float drift) noexcept;
+    void reconcileFreeLanes(const Controls& controls) noexcept;
+    void processFreeEvents(const Controls& controls, float tide, float drift) noexcept;
     bool beginOneShot(Grain& grain,
+                      int laneIndex,
                       const Controls& controls,
                       float tide,
                       float drift) noexcept;
-    double nextBirthInterval(const Grain& grain,
-                             const Controls& controls,
-                             float drift) const noexcept;
+    double activityIntervalSamples(float activity) const noexcept;
+    double nextLaneInterval(FreeState::Lane& lane,
+                            int laneIndex,
+                            const Controls& controls,
+                            float drift) noexcept;
     int requestedLengthInSamples(const Controls& controls) const noexcept;
     float randomUnit(std::int64_t eventSample, std::uint64_t stream) const noexcept;
     static std::uint64_t hash(std::uint64_t value) noexcept;
@@ -180,18 +199,19 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> tideSmoother;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> driftSmoother;
     std::array<Grain, maximumGrains> grains {};
+    FreeState freeState;
     double currentSampleRate = 0.0;
     int currentChannelCount = 0;
     int historyLength = 0;
     int writePosition = 0;
     std::int64_t totalSamplesWritten = 0;
     std::int64_t timelineSample = 0;
-    double nextBirthSample = 0.0;
+
     float nominalWetNormalization = 1.0f;
     float normalizationAttack = 0.0f;
     float normalizationRelease = 0.0f;
     int activeGrainCount = 0;
-    int targetPopulation = 0;
+
     std::uint64_t birthOrdinal = 0;
     std::uint64_t randomSeed = 0x4d595df4d0f33173ULL;
     SyncState syncState;

@@ -10,6 +10,7 @@ inline constexpr auto sync = "sync";
 inline constexpr auto syncDivision = "syncDivision";
 inline constexpr auto gridEnd = "gridEnd";
 inline constexpr auto density = "density";
+inline constexpr auto wind = "wind";
 inline constexpr auto shape = "shape";
 inline constexpr auto spread = "spread";
 inline constexpr auto drift = "drift";

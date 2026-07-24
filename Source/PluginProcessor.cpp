@@ -37,6 +37,7 @@ TideGrainsAudioProcessor::TideGrainsAudioProcessor()
     syncDivisionParameter = parameters.getRawParameterValue(tide::parameter::syncDivision);
     gridEndParameter = parameters.getRawParameterValue(tide::parameter::gridEnd);
     densityParameter = parameters.getRawParameterValue(tide::parameter::density);
+    windParameter = parameters.getRawParameterValue(tide::parameter::wind);
     shapeParameter = parameters.getRawParameterValue(tide::parameter::shape);
     spreadParameter = parameters.getRawParameterValue(tide::parameter::spread);
     driftParameter = parameters.getRawParameterValue(tide::parameter::drift);
@@ -52,6 +53,7 @@ TideGrainsAudioProcessor::TideGrainsAudioProcessor()
     jassert(syncDivisionParameter != nullptr);
     jassert(gridEndParameter != nullptr);
     jassert(densityParameter != nullptr);
+    jassert(windParameter != nullptr);
     jassert(shapeParameter != nullptr);
     jassert(spreadParameter != nullptr);
     jassert(driftParameter != nullptr);
@@ -199,7 +201,8 @@ void TideGrainsAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         driftParameter->load(),
         syncParameter->load() >= 0.5f,
         static_cast<int>(std::round(syncDivisionParameter->load())),
-        gridEndParameter->load() >= 0.5f
+        gridEndParameter->load() >= 0.5f,
+        windParameter->load()
     };
 
     applySmoothedGain(buffer,
@@ -355,6 +358,7 @@ void TideGrainsAudioProcessor::setStateInformation(const void* data,
             addMissingParameter(tide::parameter::sync, 0.0f);
             addMissingParameter(tide::parameter::syncDivision, 4.0f);
             addMissingParameter(tide::parameter::gridEnd, 1.0f);
+            addMissingParameter(tide::parameter::wind, 0.5f);
             parameters.replaceState(restored);
 
             const auto seed = parameters.state.getProperty("randomSeed");
@@ -404,7 +408,9 @@ TideGrainsAudioProcessor::createParameterLayout()
         juce::ParameterID { tide::parameter::gridEnd, 1 }, "Grid End", true));
     layout.add(std::make_unique<Parameter>(
         juce::ParameterID { tide::parameter::density, 1 }, "Density", densityRange, 10.0f,
-        juce::AudioParameterFloatAttributes().withLabel("grains")));
+        juce::AudioParameterFloatAttributes().withLabel("lanes")));
+    layout.add(std::make_unique<Parameter>(
+        juce::ParameterID { tide::parameter::wind, 1 }, "Wind", Range { 0.0f, 1.0f }, 0.5f));
     layout.add(std::make_unique<Parameter>(
         juce::ParameterID { tide::parameter::shape, 1 }, "Shape", Range { 0.0f, 1.0f }, 0.5f));
     layout.add(std::make_unique<Parameter>(
