@@ -9,9 +9,9 @@ namespace
 {
 constexpr float baseSafetyMarginSeconds = 0.010f;
 constexpr float minimumGrainSeconds = 0.005f;
-constexpr float maximumGrainSeconds = 1.000f;
+constexpr float maximumGrainSeconds = 5.000f;
 constexpr float minimumTimeSeconds = 0.020f;
-constexpr float maximumTimeSeconds = 5.0f;
+constexpr float maximumTimeSeconds = 15.0f;
 constexpr float maximumSpeedDeviation = 0.01f;
 constexpr float maximumLifetimeVariation = 0.15f;
 constexpr float maximumEventTimingJitter = 0.15f;
@@ -75,7 +75,7 @@ void GranulatorEngine::prepare(const double sampleRate,
 
     currentSampleRate = juce::jmax(1.0, sampleRate);
     currentChannelCount = std::clamp(channelCount, 1, 2);
-    historyLength = static_cast<int>(std::ceil(5.0 * currentSampleRate)) + 2;
+    historyLength = static_cast<int>(std::ceil(15.0 * currentSampleRate)) + 2;
 
     history.setSize(currentChannelCount, historyLength, false, true, false);
     mixSmoother.reset(currentSampleRate, 0.02);

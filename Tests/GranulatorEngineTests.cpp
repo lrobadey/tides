@@ -234,24 +234,28 @@ bool drySignalPassesThrough()
     return true;
 }
 
-bool largestSizeLastsOneSecond()
+bool largestSizeLastsFiveSeconds()
 {
     constexpr auto sampleRate = 48000.0;
     tide::GranulatorEngine engine;
     engine.prepare(sampleRate, 64, 2, 1.0f);
 
     tide::GranulatorEngine::Controls controls;
-    controls.grainSizeMilliseconds = 1000.0f;
+    controls.grainSizeMilliseconds = 5000.0f;
     if (tide::GranulatorEngineTestAccess::requestedLengthInSamples(engine, controls)
-        != static_cast<int>(sampleRate))
+        != static_cast<int>(sampleRate * 5.0))
     {
         return false;
     }
 
     TideGrainsAudioProcessor processor;
     const auto sizeRange = processor.parameters.getParameterRange(tide::parameter::size);
+    const auto timeRange = processor.parameters.getParameterRange(tide::parameter::time);
     return approximatelyEqual(sizeRange.start, 5.0f)
-        && approximatelyEqual(sizeRange.end, 1000.0f);
+        && approximatelyEqual(sizeRange.end, 5000.0f)
+        && approximatelyEqual(timeRange.start, 0.02f)
+        && approximatelyEqual(timeRange.end, 15.0f)
+        && approximatelyEqual(static_cast<float>(processor.getTailLengthSeconds()), 20.0f);
 }
 
 bool delayedGrainBecomesAudibleAndStaysBounded()
@@ -2368,7 +2372,7 @@ int main()
         return 1;
     }
 
-    if (!largestSizeLastsOneSecond())
+    if (!largestSizeLastsFiveSeconds())
     {
         std::cerr << "Maximum Size lifetime test failed\n";
         return 1;

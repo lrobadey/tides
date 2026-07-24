@@ -85,7 +85,7 @@ private:
     std::uint64_t displayGeneration = 1;
     bool hostWasPlaying = false;
     double lastPlayingBpm = 0.0;
-    std::atomic<double> synchronizedTailSeconds { 5.0 };
+    std::atomic<double> synchronizedTailSeconds { 20.0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TideGrainsAudioProcessor)
 };

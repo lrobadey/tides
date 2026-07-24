@@ -14,7 +14,7 @@ The plug-in now contains the integrated asynchronous granular-wave DSP:
 - parameter state save/restore
 - a custom resizable JUCE editor with a parameter-reactive tidal field
 - a heavily branded deep-water visual system with live internal-history waves and exact grain read heads
-- a preallocated five-second stereo rolling buffer
+- a preallocated fifteen-second stereo rolling buffer
 - 1–64 independent monophonic grain lanes feeding a preallocated 64-voice pool
 - Wind-controlled rests between lane articulations, with deterministic per-lane timing drift and no shared pulse
 - Size-defined nominal lifetimes: each grain plays once, releases, and never restarts
@@ -36,9 +36,9 @@ centroid is calculated from those live read heads rather than animated separatel
 
 ## Initial controls
 
-- **Time**: selected buffer history, up to 5 seconds
+- **Time**: selected buffer history, up to 15 seconds
 - **Tide**: distance that new births may trail the moving source centroid; low is tight, high is broad
-- **Size**: nominal lifetime of each one-shot grain
+- **Size**: nominal lifetime of each one-shot grain, up to 5 seconds
 - **Density**: number of independent grain lanes, from 1 to 64
 - **Wind**: rest between grains relative to Size; calm leaves four grain lengths, halfway leaves one, and full Wind is back-to-back; inactive in Sync mode
 - **Shape**: softened descending saw envelope to sine envelope
