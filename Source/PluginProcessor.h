@@ -70,6 +70,7 @@ private:
     std::atomic<float>* densityParameter = nullptr;
     std::atomic<float>* windParameter = nullptr;
     std::atomic<float>* shapeParameter = nullptr;
+    std::atomic<float>* envelopePhaseParameter = nullptr;
     std::atomic<float>* spreadParameter = nullptr;
     std::atomic<float>* driftParameter = nullptr;
     std::atomic<float>* feedbackParameter = nullptr;

@@ -208,10 +208,37 @@ void TidesLookAndFeel::drawRotarySlider(juce::Graphics& g,
                                          featured ? 9.0f : 7.0f)
                       .withCentre(needleEnd));
 
-    g.setColour(tideBlue.withAlpha(0.22f));
-    g.fillEllipse(juce::Rectangle<float>(radius * 0.38f, radius * 0.38f).withCentre(centre));
-    g.setColour(foam.withAlpha(0.72f));
-    g.drawEllipse(juce::Rectangle<float>(radius * 0.24f, radius * 0.24f).withCentre(centre), 1.0f);
+    if (static_cast<bool>(slider.getProperties()["phaseControl"]))
+    {
+        const auto graph = juce::Rectangle<float>(radius * 0.62f, radius * 0.34f)
+                               .withCentre(centre);
+        const auto peak = 0.02f + sliderPosition * 0.96f;
+        juce::Path curve;
+        for (auto point = 0; point <= 24; ++point)
+        {
+            const auto p = static_cast<float>(point) / 24.0f;
+            const auto warped = p <= peak ? 0.5f * p / peak
+                                          : 0.5f + 0.5f * (p - peak) / (1.0f - peak);
+            const auto value = std::sin(juce::MathConstants<float>::pi * warped);
+            const juce::Point<float> plotted { graph.getX() + p * graph.getWidth(),
+                                               graph.getBottom() - value * graph.getHeight() };
+            if (point == 0) curve.startNewSubPath(plotted); else curve.lineTo(plotted);
+        }
+        g.setColour(foam.withAlpha(0.20f));
+        g.drawVerticalLine(juce::roundToInt(graph.getCentreX()), graph.getY(), graph.getBottom());
+        g.setColour(coral.withAlpha(0.88f));
+        g.drawVerticalLine(juce::roundToInt(graph.getX() + peak * graph.getWidth()),
+                           graph.getY(), graph.getBottom());
+        g.setColour(foam.withAlpha(0.78f));
+        g.strokePath(curve, juce::PathStrokeType(1.1f, juce::PathStrokeType::curved));
+    }
+    else
+    {
+        g.setColour(tideBlue.withAlpha(0.22f));
+        g.fillEllipse(juce::Rectangle<float>(radius * 0.38f, radius * 0.38f).withCentre(centre));
+        g.setColour(foam.withAlpha(0.72f));
+        g.drawEllipse(juce::Rectangle<float>(radius * 0.24f, radius * 0.24f).withCentre(centre), 1.0f);
+    }
 }
 
 TideParameter::TideParameter(juce::AudioProcessorValueTreeState& state,
@@ -227,6 +254,7 @@ TideParameter::TideParameter(juce::AudioProcessorValueTreeState& state,
                                juce::MathConstants<float>::pi * 2.8f,
                                true);
     slider.getProperties().set("featured", featured);
+    slider.getProperties().set("phaseControl", parameterID == tide::parameter::envelopePhase);
     slider.setName(displayName);
     slider.setTitle(displayName);
     const auto* parameter = state.getParameter(parameterID);
@@ -320,6 +348,11 @@ void TideParameter::paint(juce::Graphics& g)
     else if (name.endsWith("GAIN"))
         value = (slider.getValue() >= 0.05 ? "+" : "")
             + juce::String(slider.getValue(), 1) + " dB";
+    else if (name == "PHASE")
+    {
+        const auto percentage = juce::roundToInt(slider.getValue() * 100.0);
+        value = (percentage > 0 ? "+" : "") + juce::String(percentage) + "%";
+    }
     else
         value = juce::String(juce::roundToInt(slider.getValue() * 100.0)) + "%";
 
@@ -832,12 +865,13 @@ TidesAudioProcessorEditor::TidesAudioProcessorEditor(TideGrainsAudioProcessor& o
       density(owner.parameters, tide::parameter::density, "Density"),
       wind(owner.parameters, tide::parameter::wind, "Wind"),
       shape(owner.parameters, tide::parameter::shape, "Shape"),
+      phase(owner.parameters, tide::parameter::envelopePhase, "Phase"),
       spread(owner.parameters, tide::parameter::spread, "Spread"),
       drift(owner.parameters, tide::parameter::drift, "Drift"),
       sync(owner.parameters, tide::parameter::sync, "Sync"),
       gridEnd(owner.parameters, tide::parameter::gridEnd, "Grid End"),
       feedback(owner.parameters, tide::parameter::feedback, "Feedback"),
-      lowerControls { &size, &density, &wind, &shape, &spread, &drift, &gridEnd, &feedback }
+      lowerControls { &size, &density, &wind, &shape, &phase, &spread, &drift, &gridEnd, &feedback }
 {
     setLookAndFeel(&lookAndFeel);
     setOpaque(true);

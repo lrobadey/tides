@@ -79,6 +79,11 @@ struct GranulatorEngineTestAccess
         return engine.requestedLengthInSamples(controls);
     }
 
+    static float envelope(const float phase, const float shape, const float shift) noexcept
+    {
+        return GranulatorEngine::grainEnvelope(phase, shape, shift);
+    }
+
     static std::vector<VoiceState> voiceStates(const GranulatorEngine& engine)
     {
         std::vector<VoiceState> result;
@@ -2068,6 +2073,41 @@ bool shapeMorphChangesTheGrainEnvelope()
     });
 }
 
+bool envelopePhaseMovesThePeakWithoutBreakingBoundaries()
+{
+    using Access = tide::GranulatorEngineTestAccess;
+    for (const auto shape : { 0.0f, 0.5f, 1.0f })
+        for (const auto shift : { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f })
+            if (! approximatelyEqual(Access::envelope(0.0f, shape, shift), 0.0f)
+                || ! approximatelyEqual(Access::envelope(1.0f, shape, shift), 0.0f))
+                return false;
+
+    const auto peakPosition = [](const float shift)
+    {
+        auto bestPhase = 0.0f;
+        auto bestValue = -1.0f;
+        for (auto index = 0; index <= 1000; ++index)
+        {
+            const auto phase = static_cast<float>(index) / 1000.0f;
+            const auto value = tide::GranulatorEngineTestAccess::envelope(phase, 1.0f, shift);
+            if (value > bestValue) { bestValue = value; bestPhase = phase; }
+        }
+        return bestPhase;
+    };
+    if (! (peakPosition(-0.75f) < peakPosition(0.0f)
+           && peakPosition(0.0f) < peakPosition(0.75f)))
+        return false;
+
+    for (auto index = 0; index <= 100; ++index)
+    {
+        const auto phase = static_cast<float>(index) / 100.0f;
+        const auto expected = std::sin(juce::MathConstants<float>::pi * phase);
+        if (std::abs(Access::envelope(phase, 1.0f, 0.0f) - expected) > 1.0e-5f)
+            return false;
+    }
+    return true;
+}
+
 bool spreadMovesStereoContentAcrossTheField()
 {
     tide::GranulatorEngine engine;
@@ -2586,6 +2626,12 @@ int main()
     if (!shapeMorphChangesTheGrainEnvelope())
     {
         std::cerr << "Shape envelope test failed\n";
+        return 1;
+    }
+
+    if (!envelopePhaseMovesThePeakWithoutBreakingBoundaries())
+    {
+        std::cerr << "Envelope Phase boundary/peak test failed\n";
         return 1;
     }
 

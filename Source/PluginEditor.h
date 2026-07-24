@@ -154,13 +154,14 @@ private:
     TideParameter density;
     TideParameter wind;
     TideParameter shape;
+    TideParameter phase;
     TideParameter spread;
     TideParameter drift;
     TideToggle sync;
     TideToggle gridEnd;
     TideParameter feedback;
 
-    std::array<juce::Component*, 8> lowerControls;
+    std::array<juce::Component*, 9> lowerControls;
     juce::TooltipWindow tooltipWindow { this, 500 };
     bool syncMode = false;
 
