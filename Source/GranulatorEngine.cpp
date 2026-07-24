@@ -228,8 +228,9 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
             const auto phase = grain.syncVoice
                 ? static_cast<float>(grain.lifeProgress)
                 : static_cast<float>(grain.ageInSamples) * grain.phaseScale;
-            const auto envelope = grainEnvelope(phase, grain.shapeAtBirth,
-                                                grain.envelopePhaseAtBirth);
+            const auto envelope = evaluateEnvelope(phase, grain.shapeAtBirth,
+                                                   grain.envelopePhaseAtBirth,
+                                                   grain.envelopeEdgeFadePhase);
             const auto releaseGain = grain.releaseSamplesRemaining > 0
                 ? static_cast<float>(grain.releaseSamplesRemaining)
                     / static_cast<float>(juce::jmax(1, grain.releaseSamplesTotal))
@@ -394,7 +395,9 @@ void GranulatorEngine::getVisualFrame(VisualFrame& destination) const noexcept
             grain.eventId,
             sourceDelay,
             grain.playbackSpeed,
-            grainEnvelope(phase, grain.shapeAtBirth, grain.envelopePhaseAtBirth),
+            evaluateEnvelope(phase, grain.shapeAtBirth,
+                             grain.envelopePhaseAtBirth,
+                             grain.envelopeEdgeFadePhase),
             grain.pan,
             grain.ageInSamples,
             grain.lengthInSamples
@@ -598,8 +601,10 @@ bool GranulatorEngine::beginSyncLane(const int laneIndex,
     grain.phaseScale = 1.0f / static_cast<float>(grain.lengthInSamples - 1);
     grain.shapeAtBirth = juce::jlimit(0.0f, 1.0f, controls.shape);
     grain.envelopePhaseAtBirth = juce::jlimit(-1.0f, 1.0f, controls.envelopePhase);
-    grain.envelopeMassAtBirth = envelopeMass(grain.shapeAtBirth,
-                                             grain.envelopePhaseAtBirth);
+    grain.envelopeEdgeFadePhase = juce::jmin(
+        0.02f, 64.0f / static_cast<float>(juce::jmax(2, grain.lengthInSamples)));
+    grain.envelopeMassAtBirth = 0.5f
+        + grain.shapeAtBirth * (2.0f / juce::MathConstants<float>::pi - 0.5f);
     grain.tideAtBirth = juce::jlimit(0.0f, 1.0f, controls.tide);
     grain.playbackSpeed = 1.0;
     grain.sourceDelaySamples = delay;
@@ -769,8 +774,10 @@ bool GranulatorEngine::beginOneShot(Grain& grain,
     grain.phaseScale = 1.0f / static_cast<float>(juce::jmax(1, length - 1));
     grain.shapeAtBirth = juce::jlimit(0.0f, 1.0f, controls.shape);
     grain.envelopePhaseAtBirth = juce::jlimit(-1.0f, 1.0f, controls.envelopePhase);
-    grain.envelopeMassAtBirth = envelopeMass(grain.shapeAtBirth,
-                                             grain.envelopePhaseAtBirth);
+    grain.envelopeEdgeFadePhase = juce::jmin(
+        0.02f, 64.0f / static_cast<float>(juce::jmax(2, length)));
+    grain.envelopeMassAtBirth = 0.5f
+        + grain.shapeAtBirth * (2.0f / juce::MathConstants<float>::pi - 0.5f);
     grain.tideAtBirth = juce::jlimit(0.0f, 1.0f, tide);
     grain.playbackSpeed = playbackSpeed;
     grain.sourceDelaySamples = delayInSamples;
@@ -860,38 +867,25 @@ float GranulatorEngine::roundedSawEnvelope(const float phase) noexcept
     return remaining * remaining * (3.0f - 2.0f * remaining);
 }
 
-float GranulatorEngine::warpEnvelopePhase(const float phase,
-                                          const float nativePeak,
-                                          const float shift) noexcept
+float GranulatorEngine::evaluateEnvelope(const float phase,
+                                         const float shape,
+                                         const float envelopePhase,
+                                         const float edgeFadePhase) noexcept
 {
-    const auto clampedPhase = juce::jlimit(0.0f, 1.0f, phase);
-    const auto peak = juce::jlimit(0.02f, 0.98f, nativePeak);
-    const auto amount = juce::jlimit(-1.0f, 1.0f, shift);
-    const auto target = amount < 0.0f
-        ? peak + (peak - 0.02f) * amount
-        : peak + (0.98f - peak) * amount;
-    if (clampedPhase <= target)
-        return peak * clampedPhase / target;
-    return peak + (1.0f - peak) * (clampedPhase - target) / (1.0f - target);
-}
+    const auto grainPhase = juce::jlimit(0.0f, 1.0f, phase);
+    const auto rotation = juce::jlimit(-1.0f, 1.0f, envelopePhase) * 0.5f;
+    const auto waveformPhase = wrappedUnit(grainPhase + rotation);
+    const auto saw = roundedSawEnvelope(waveformPhase);
+    const auto sine = halfSine(waveformPhase);
+    const auto envelope = saw + (sine - saw) * juce::jlimit(0.0f, 1.0f, shape);
 
-float GranulatorEngine::grainEnvelope(const float phase,
-                                      const float shape,
-                                      const float envelopePhase) noexcept
-{
-    const auto saw = roundedSawEnvelope(warpEnvelopePhase(phase, 0.08f, envelopePhase));
-    const auto sine = halfSine(warpEnvelopePhase(phase, 0.5f, envelopePhase));
-    return saw + (sine - saw) * juce::jlimit(0.0f, 1.0f, shape);
-}
+    if (std::abs(rotation) <= 1.0e-7f || edgeFadePhase <= 0.0f)
+        return envelope;
 
-float GranulatorEngine::envelopeMass(const float shape, const float envelopePhase) noexcept
-{
-    constexpr auto steps = 64;
-    auto sum = 0.0f;
-    for (auto index = 0; index < steps; ++index)
-        sum += grainEnvelope((static_cast<float>(index) + 0.5f) / static_cast<float>(steps),
-                             shape, envelopePhase);
-    return sum / static_cast<float>(steps);
+    const auto fade = juce::jlimit(1.0e-6f, 0.25f, edgeFadePhase);
+    const auto fadeIn = smoothStep(grainPhase / fade);
+    const auto fadeOut = smoothStep((1.0f - grainPhase) / fade);
+    return envelope * juce::jmin(fadeIn, fadeOut);
 }
 
 float GranulatorEngine::readHistorySample(const float* const channelData,

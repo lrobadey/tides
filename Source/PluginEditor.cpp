@@ -84,6 +84,24 @@ void drawGlow(juce::Graphics& g,
     g.setGradientFill(glow);
     g.fillEllipse(centre.x - radius, centre.y - radius, radius * 2.0f, radius * 2.0f);
 }
+
+float previewPeakPosition(const float shape, const float envelopePhase) noexcept
+{
+    auto peakPosition = 0.0f;
+    auto peakValue = -1.0f;
+    for (auto point = 0; point <= 96; ++point)
+    {
+        const auto phase = static_cast<float>(point) / 96.0f;
+        const auto value = tide::GranulatorEngine::evaluateEnvelope(
+            phase, shape, envelopePhase);
+        if (value > peakValue)
+        {
+            peakValue = value;
+            peakPosition = phase;
+        }
+    }
+    return peakPosition;
+}
 } // namespace
 
 TidesLookAndFeel::TidesLookAndFeel()
@@ -208,29 +226,70 @@ void TidesLookAndFeel::drawRotarySlider(juce::Graphics& g,
                                          featured ? 9.0f : 7.0f)
                       .withCentre(needleEnd));
 
-    if (static_cast<bool>(slider.getProperties()["phaseControl"]))
+    const auto envelopePreview = static_cast<bool>(
+        slider.getProperties().getWithDefault("envelopePreview", false));
+    if (envelopePreview)
     {
-        const auto graph = juce::Rectangle<float>(radius * 0.62f, radius * 0.34f)
+        const auto shape = sliderPosition;
+        const auto envelopePhase = static_cast<float>(
+            slider.getProperties().getWithDefault("envelopePhase", 0.0));
+        const auto graph = juce::Rectangle<float>(radius * 0.82f, radius * 0.48f)
                                .withCentre(centre);
-        const auto peak = 0.02f + sliderPosition * 0.96f;
         juce::Path curve;
-        for (auto point = 0; point <= 24; ++point)
+        juce::Path fill;
+        for (auto point = 0; point <= 36; ++point)
         {
-            const auto p = static_cast<float>(point) / 24.0f;
-            const auto warped = p <= peak ? 0.5f * p / peak
-                                          : 0.5f + 0.5f * (p - peak) / (1.0f - peak);
-            const auto value = std::sin(juce::MathConstants<float>::pi * warped);
+            const auto p = static_cast<float>(point) / 36.0f;
+            const auto value = tide::GranulatorEngine::evaluateEnvelope(
+                p, shape, 0.0f, 0.0f);
             const juce::Point<float> plotted { graph.getX() + p * graph.getWidth(),
                                                graph.getBottom() - value * graph.getHeight() };
-            if (point == 0) curve.startNewSubPath(plotted); else curve.lineTo(plotted);
+            if (point == 0)
+            {
+                curve.startNewSubPath(plotted);
+                fill.startNewSubPath(graph.getX(), graph.getBottom());
+                fill.lineTo(plotted);
+            }
+            else
+            {
+                curve.lineTo(plotted);
+                fill.lineTo(plotted);
+            }
         }
-        g.setColour(foam.withAlpha(0.20f));
-        g.drawVerticalLine(juce::roundToInt(graph.getCentreX()), graph.getY(), graph.getBottom());
-        g.setColour(coral.withAlpha(0.88f));
-        g.drawVerticalLine(juce::roundToInt(graph.getX() + peak * graph.getWidth()),
+        fill.lineTo(graph.getRight(), graph.getBottom());
+        fill.closeSubPath();
+
+        const auto neutralPeak = previewPeakPosition(shape, 0.0f);
+        auto currentPhase = envelopePhase * 0.5f;
+        currentPhase -= std::floor(currentPhase);
+        g.setColour(foam.withAlpha(0.12f));
+        g.drawHorizontalLine(juce::roundToInt(graph.getBottom()),
+                             graph.getX(), graph.getRight());
+        g.drawVerticalLine(juce::roundToInt(graph.getX() + neutralPeak * graph.getWidth()),
                            graph.getY(), graph.getBottom());
-        g.setColour(foam.withAlpha(0.78f));
-        g.strokePath(curve, juce::PathStrokeType(1.1f, juce::PathStrokeType::curved));
+
+        juce::ColourGradient envelopeFill(tideBlue.withAlpha(0.18f),
+                                          graph.getCentreX(), graph.getY(),
+                                          tideBlue.withAlpha(0.01f),
+                                          graph.getCentreX(), graph.getBottom(),
+                                          false);
+        g.setGradientFill(envelopeFill);
+        g.fillPath(fill);
+        g.setColour(foam.withAlpha(0.86f));
+        g.strokePath(curve, juce::PathStrokeType(1.25f,
+                                                 juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
+
+        const auto peakPoint = juce::Point<float> {
+            graph.getX() + currentPhase * graph.getWidth(),
+            graph.getBottom()
+                - tide::GranulatorEngine::evaluateEnvelope(
+                    currentPhase, shape, 0.0f, 0.0f) * graph.getHeight()
+        };
+        g.setColour(coral.withAlpha(0.48f));
+        g.drawVerticalLine(juce::roundToInt(peakPoint.x), peakPoint.y, graph.getBottom());
+        g.setColour(coral.withAlpha(0.96f));
+        g.fillEllipse(juce::Rectangle<float>(3.8f, 3.8f).withCentre(peakPoint));
     }
     else
     {
@@ -254,7 +313,11 @@ TideParameter::TideParameter(juce::AudioProcessorValueTreeState& state,
                                juce::MathConstants<float>::pi * 2.8f,
                                true);
     slider.getProperties().set("featured", featured);
-    slider.getProperties().set("phaseControl", parameterID == tide::parameter::envelopePhase);
+    const auto shapeControl = parameterID == tide::parameter::shape;
+    slider.getProperties().set("shapeControl", shapeControl);
+    slider.getProperties().set("envelopePreview", shapeControl);
+    slider.getProperties().set("envelopeShape", 0.5f);
+    slider.getProperties().set("envelopePhase", 0.0f);
     slider.setName(displayName);
     slider.setTitle(displayName);
     const auto* parameter = state.getParameter(parameterID);
@@ -276,6 +339,23 @@ TideParameter::~TideParameter()
 {
     slider.removeMouseListener(this);
     slider.removeListener(this);
+}
+
+void TideParameter::setEnvelopePreview(const float shape, const float phase)
+{
+    const auto clampedShape = juce::jlimit(0.0f, 1.0f, shape);
+    const auto clampedPhase = juce::jlimit(-1.0f, 1.0f, phase);
+    const auto previousShape = static_cast<float>(
+        slider.getProperties().getWithDefault("envelopeShape", 0.5));
+    const auto previousPhase = static_cast<float>(
+        slider.getProperties().getWithDefault("envelopePhase", 0.0));
+    if (std::abs(previousShape - clampedShape) < 1.0e-6f
+        && std::abs(previousPhase - clampedPhase) < 1.0e-6f)
+        return;
+
+    slider.getProperties().set("envelopeShape", clampedShape);
+    slider.getProperties().set("envelopePhase", clampedPhase);
+    slider.repaint();
 }
 
 void TideParameter::mouseEnter(const juce::MouseEvent&)
@@ -350,8 +430,9 @@ void TideParameter::paint(juce::Graphics& g)
             + juce::String(slider.getValue(), 1) + " dB";
     else if (name == "PHASE")
     {
-        const auto percentage = juce::roundToInt(slider.getValue() * 100.0);
-        value = (percentage > 0 ? "+" : "") + juce::String(percentage) + "%";
+        const auto degrees = juce::roundToInt(slider.getValue() * 180.0);
+        value = (degrees > 0 ? "+" : "") + juce::String(degrees)
+            + juce::String::fromUTF8("\xC2\xB0");
     }
     else
         value = juce::String(juce::roundToInt(slider.getValue() * 100.0)) + "%";
@@ -864,14 +945,14 @@ TidesAudioProcessorEditor::TidesAudioProcessorEditor(TideGrainsAudioProcessor& o
       size(owner.parameters),
       density(owner.parameters, tide::parameter::density, "Density"),
       wind(owner.parameters, tide::parameter::wind, "Wind"),
-      shape(owner.parameters, tide::parameter::shape, "Shape"),
+      shape(owner.parameters, tide::parameter::shape, "Shape", true),
       phase(owner.parameters, tide::parameter::envelopePhase, "Phase"),
       spread(owner.parameters, tide::parameter::spread, "Spread"),
       drift(owner.parameters, tide::parameter::drift, "Drift"),
       sync(owner.parameters, tide::parameter::sync, "Sync"),
       gridEnd(owner.parameters, tide::parameter::gridEnd, "Grid End"),
       feedback(owner.parameters, tide::parameter::feedback, "Feedback"),
-      lowerControls { &size, &density, &wind, &shape, &phase, &spread, &drift, &gridEnd, &feedback }
+      lowerControls { &size, &density, &wind, &spread, &drift, &gridEnd, &feedback }
 {
     setLookAndFeel(&lookAndFeel);
     setOpaque(true);
@@ -883,6 +964,8 @@ TidesAudioProcessorEditor::TidesAudioProcessorEditor(TideGrainsAudioProcessor& o
     addAndMakeVisible(tide);
     addAndMakeVisible(mix);
     addAndMakeVisible(sync);
+    addAndMakeVisible(shape);
+    addAndMakeVisible(phase);
     for (auto* control : lowerControls)
         addAndMakeVisible(*control);
 
@@ -890,7 +973,8 @@ TidesAudioProcessorEditor::TidesAudioProcessorEditor(TideGrainsAudioProcessor& o
     gridEnd.setTooltip("With Grid End off, Drift layout changes form on the following cycle.");
 
     applySyncMode(owner.parameters.getRawParameterValue(tide::parameter::sync)->load() >= 0.5f);
-    startTimerHz(20);
+    updateEnvelopePreviews();
+    startTimerHz(60);
 
     setResizable(true, true);
     setResizeLimits(780, 520, 1200, 800);
@@ -917,7 +1001,18 @@ void TidesAudioProcessorEditor::timerCallback()
         applySyncMode(enabled);
     else
         gridEnd.repaint();
+    updateEnvelopePreviews();
     sync.repaint();
+}
+
+void TidesAudioProcessorEditor::updateEnvelopePreviews()
+{
+    auto& processor = static_cast<TideGrainsAudioProcessor&>(*getAudioProcessor());
+    const auto shapeValue = processor.parameters
+                                .getRawParameterValue(tide::parameter::shape)->load();
+    const auto phaseValue = processor.parameters
+                                .getRawParameterValue(tide::parameter::envelopePhase)->load();
+    shape.setEnvelopePreview(shapeValue, phaseValue);
 }
 
 TidesAudioProcessorEditor::~TidesAudioProcessorEditor()
@@ -949,7 +1044,7 @@ void TidesAudioProcessorEditor::paint(juce::Graphics& g)
 
     const auto scale = width / 960.0f;
     const auto headerHeight = 106.0f * scale;
-    const auto lowerTop = height * 0.65f;
+    const auto lowerTop = height * 0.60f;
 
     // Light shafts filtering down from the surface.
     for (auto shaft = 0; shaft < 3; ++shaft)
@@ -1034,7 +1129,7 @@ void TidesAudioProcessorEditor::resized()
     const auto height = static_cast<float>(getHeight());
     const auto scale = width / 960.0f;
     const auto headerHeight = 107.0f * scale;
-    const auto lowerTop = height * 0.65f;
+    const auto lowerTop = height * 0.60f;
 
     const auto gainLeft = 318.0f * scale;
     const auto gainRight = width - 92.0f * scale;
@@ -1076,13 +1171,28 @@ void TidesAudioProcessorEditor::resized()
     const auto lowerY = lowerTop + 29.0f * scale;
     const auto lowerHeight = height - lowerY - 20.0f * scale;
     const auto availableWidth = width - 62.0f * scale;
-    const auto controlWidth = availableWidth / static_cast<float>(lowerControls.size());
-
+    const auto controlWidth = availableWidth / 9.0f;
+    constexpr std::array<int, 7> controlColumns { 0, 1, 2, 5, 6, 7, 8 };
     for (size_t index = 0; index < lowerControls.size(); ++index)
-    {
-        lowerControls[index]->setBounds(juce::roundToInt(31.0f * scale + controlWidth * static_cast<float>(index)),
-                                        juce::roundToInt(lowerY),
-                                        juce::roundToInt(controlWidth),
-                                        juce::roundToInt(lowerHeight));
-    }
+        lowerControls[index]->setBounds(
+            juce::roundToInt(31.0f * scale
+                             + controlWidth * static_cast<float>(controlColumns[index])),
+            juce::roundToInt(lowerY),
+            juce::roundToInt(controlWidth),
+            juce::roundToInt(lowerHeight));
+
+    const auto shapeLeft = 31.0f * scale + controlWidth * 3.0f;
+    const auto shapeWidth = controlWidth * 2.0f;
+    const auto phaseHeight = juce::jlimit(54.0f * scale,
+                                         72.0f * scale,
+                                         lowerHeight * 0.32f);
+    const auto shapeHeight = lowerHeight - phaseHeight + 8.0f * scale;
+    shape.setBounds(juce::roundToInt(shapeLeft),
+                    juce::roundToInt(lowerY - 7.0f * scale),
+                    juce::roundToInt(shapeWidth),
+                    juce::roundToInt(shapeHeight));
+    phase.setBounds(juce::roundToInt(shapeLeft + shapeWidth * 0.31f),
+                    juce::roundToInt(lowerY + lowerHeight - phaseHeight),
+                    juce::roundToInt(shapeWidth * 0.38f),
+                    juce::roundToInt(phaseHeight));
 }

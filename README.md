@@ -23,7 +23,7 @@ The plug-in now contains the integrated asynchronous granular-wave DSP:
 - bounded, deterministic Drift in launch timing, source position, playback speed, and stereo placement
 - per-grain birth state that remains fixed until that grain finishes
 - stereo-preserving output with smoothed population normalisation for mostly steady aggregate loudness
-- rounded-saw-to-sine one-shot grain envelopes with endpoint-safe peak shifting
+- rounded-saw-to-sine one-shot grain envelopes with endpoint-safe phase rotation
 - working Time, Tide, Size, Density, Shape, Phase, Spread, Drift, Feedback, and equal-power Mix controls
 - a stereo-linked final safety limiter with a -1 dBFS ceiling
 
@@ -42,7 +42,7 @@ centroid is calculated from those live read heads rather than animated separatel
 - **Density**: number of independent grain lanes, from 1 to 64
 - **Wind**: rest between grains relative to Size; calm leaves four grain lengths, halfway leaves one, and full Wind is back-to-back; inactive in Sync mode
 - **Shape**: softened descending saw envelope to sine envelope
-- **Phase**: moves each envelope's natural peak earlier or later while preserving zero-amplitude grain boundaries
+- **Phase**: rotates the unchanged envelope around its cycle; a short outer safety fade preserves click-free grain boundaries
 - **Spread**: stereo placement range
 - **Drift**: bounded launch-timing, source, playback-speed, and spatial variation
 - **Feedback**: processed grains returned to the effect

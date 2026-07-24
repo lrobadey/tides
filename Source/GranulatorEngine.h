@@ -88,6 +88,10 @@ public:
         process(buffer, controls, {}, internalHistoryTap, internalHistoryTapCapacity);
     }
     void getVisualFrame(VisualFrame& destination) const noexcept;
+    static float evaluateEnvelope(float phase,
+                                  float shape,
+                                  float envelopePhase = 0.0f,
+                                  float edgeFadePhase = 0.02f) noexcept;
 
 private:
     friend struct GranulatorEngineTestAccess;
@@ -101,6 +105,7 @@ private:
         std::uint64_t eventId = 0;
         float shapeAtBirth = 0.5f;
         float envelopePhaseAtBirth = 0.0f;
+        float envelopeEdgeFadePhase = 0.02f;
         float envelopeMassAtBirth = 0.5f;
         float phaseScale = 1.0f; // 1 / max(1, lengthInSamples - 1)
         float tideAtBirth = 0.0f;
@@ -187,9 +192,6 @@ private:
     static std::uint64_t hash(std::uint64_t value) noexcept;
     static float wrappedUnit(float value) noexcept;
     static float roundedSawEnvelope(float phase) noexcept;
-    static float warpEnvelopePhase(float phase, float nativePeak, float shift) noexcept;
-    static float grainEnvelope(float phase, float shape, float envelopePhase = 0.0f) noexcept;
-    static float envelopeMass(float shape, float envelopePhase) noexcept;
     float readHistorySample(const float* channelData, double position) const noexcept;
     void processSyncEvents(const Controls&, const Timing&, double currentPpq) noexcept;
     void commitSyncBoundary(const Controls&, double boundaryPpq, double bpm) noexcept;
