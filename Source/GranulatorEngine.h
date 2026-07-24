@@ -13,7 +13,7 @@ class GranulatorEngine
 {
 public:
     static constexpr int maximumLanes = 64;
-    static constexpr int maximumGrains = 128;
+    static constexpr int maximumGrains = maximumLanes;
 
     struct Controls
     {
@@ -175,11 +175,11 @@ private:
                       const Controls& controls,
                       float tide,
                       float drift) noexcept;
-    double activityIntervalSamples(float activity) const noexcept;
-    double nextLaneInterval(FreeState::Lane& lane,
-                            int laneIndex,
-                            const Controls& controls,
-                            float drift) noexcept;
+    double laneRestSamples(FreeState::Lane& lane,
+                           int laneIndex,
+                           int grainLengthSamples,
+                           float wind,
+                           float drift) noexcept;
     int requestedLengthInSamples(const Controls& controls) const noexcept;
     float randomUnit(std::int64_t eventSample, std::uint64_t stream) const noexcept;
     static std::uint64_t hash(std::uint64_t value) noexcept;

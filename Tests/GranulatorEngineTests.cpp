@@ -683,7 +683,7 @@ std::vector<ObservedBirth> observeBirths(const float tideAmount,
         0.5f, 120.0f, 1.0f, 16.0f, 0.65f, 0.8f, 0.0f, tideAmount, driftAmount
     };
     juce::AudioBuffer<float> sampleBuffer(2, 1);
-    std::array<std::uint64_t, 64> previousEvent {};
+    std::array<std::uint64_t, tide::GranulatorEngine::maximumGrains> previousEvent {};
     std::vector<ObservedBirth> result;
     for (auto sample = 0; sample < 5000; ++sample)
     {
@@ -2326,14 +2326,35 @@ std::vector<std::int64_t> freeBirthTimes(const float sizeMilliseconds,
     return times;
 }
 
-bool windControlsIndependentLaneRateWithoutSizeCoupling()
+bool windControlsSizeRelativeRestWithoutLaneOverlap()
 {
-    const auto shortGrains = freeBirthTimes(30.0f, 0.5f);
-    const auto longGrains = freeBirthTimes(300.0f, 0.5f);
-    const auto fasterWind = freeBirthTimes(300.0f, 0.8f);
-    return shortGrains == longGrains
-        && shortGrains.size() > 5
-        && fasterWind.size() > longGrains.size() * 2;
+    const auto halfWind = freeBirthTimes(100.0f, 0.5f);
+    const auto fullWind = freeBirthTimes(100.0f, 1.0f);
+    if (halfWind.size() < 10 || fullWind.size() < halfWind.size() * 3 / 2)
+    {
+        std::cerr << "Wind birth counts: half=" << halfWind.size()
+                  << ", full=" << fullWind.size() << '\n';
+        return false;
+    }
+    for (size_t index = 1; index < halfWind.size(); ++index)
+    {
+        const auto interval = halfWind[index] - halfWind[index - 1];
+        if (interval < 197 || interval > 201)
+        {
+            std::cerr << "Half-Wind interval: " << interval << '\n';
+            return false;
+        }
+    }
+    for (size_t index = 1; index < fullWind.size(); ++index)
+    {
+        const auto interval = fullWind[index] - fullWind[index - 1];
+        if (interval < 98 || interval > 101)
+        {
+            std::cerr << "Full-Wind interval: " << interval << '\n';
+            return false;
+        }
+    }
+    return true;
 }
 } // namespace
 
@@ -2587,9 +2608,9 @@ int main()
         return 1;
     }
 
-    if (!windControlsIndependentLaneRateWithoutSizeCoupling())
+    if (!windControlsSizeRelativeRestWithoutLaneOverlap())
     {
-        std::cerr << "Wind/Size scheduler independence test failed\n";
+        std::cerr << "Wind/Size-relative rest test failed\n";
         return 1;
     }
 
