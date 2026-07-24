@@ -152,6 +152,7 @@ private:
     TideParameter mix;
     SyncSizeControl size;
     TideParameter density;
+    TideParameter wind;
     TideParameter shape;
     TideParameter spread;
     TideParameter drift;
@@ -159,7 +160,7 @@ private:
     TideToggle gridEnd;
     TideParameter feedback;
 
-    std::array<juce::Component*, 7> lowerControls;
+    std::array<juce::Component*, 8> lowerControls;
     juce::TooltipWindow tooltipWindow { this, 500 };
     bool syncMode = false;
 

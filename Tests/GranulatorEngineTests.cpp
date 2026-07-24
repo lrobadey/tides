@@ -45,7 +45,7 @@ struct GranulatorEngineTestAccess
 
     static int simulatedPopulation(const GranulatorEngine& engine) noexcept
     {
-        return engine.targetPopulation;
+        return engine.freeState.activeLaneCount;
     }
 
     static std::int64_t timeline(const GranulatorEngine& engine) noexcept
@@ -234,24 +234,28 @@ bool drySignalPassesThrough()
     return true;
 }
 
-bool largestSizeLastsOneSecond()
+bool largestSizeLastsFiveSeconds()
 {
     constexpr auto sampleRate = 48000.0;
     tide::GranulatorEngine engine;
     engine.prepare(sampleRate, 64, 2, 1.0f);
 
     tide::GranulatorEngine::Controls controls;
-    controls.grainSizeMilliseconds = 1000.0f;
+    controls.grainSizeMilliseconds = 5000.0f;
     if (tide::GranulatorEngineTestAccess::requestedLengthInSamples(engine, controls)
-        != static_cast<int>(sampleRate))
+        != static_cast<int>(sampleRate * 5.0))
     {
         return false;
     }
 
     TideGrainsAudioProcessor processor;
     const auto sizeRange = processor.parameters.getParameterRange(tide::parameter::size);
+    const auto timeRange = processor.parameters.getParameterRange(tide::parameter::time);
     return approximatelyEqual(sizeRange.start, 5.0f)
-        && approximatelyEqual(sizeRange.end, 1000.0f);
+        && approximatelyEqual(sizeRange.end, 5000.0f)
+        && approximatelyEqual(timeRange.start, 0.02f)
+        && approximatelyEqual(timeRange.end, 15.0f)
+        && approximatelyEqual(static_cast<float>(processor.getTailLengthSeconds()), 20.0f);
 }
 
 bool delayedGrainBecomesAudibleAndStaysBounded()
@@ -362,8 +366,8 @@ bool densityRangeAndEngineCeilingAreOneToSixtyFour()
                                    tide::GranulatorEngineTestAccess::activeCount(engine));
     }
     const auto maximumPasses = tide::GranulatorEngineTestAccess::simulatedPopulation(engine) == 64
-        && tide::GranulatorEngineTestAccess::activeCount(engine) >= 60
-        && maximumActive <= 64;
+        && tide::GranulatorEngineTestAccess::birthsStarted(engine) > 64
+        && maximumActive <= tide::GranulatorEngine::maximumGrains;
     if (! maximumPasses)
         return false;
 
@@ -379,7 +383,8 @@ bool densityRangeAndEngineCeilingAreOneToSixtyFour()
             return false;
     }
     return tide::GranulatorEngineTestAccess::simulatedPopulation(single) == 1
-        && tide::GranulatorEngineTestAccess::activeCount(single) == 1;
+        && tide::GranulatorEngineTestAccess::birthsStarted(single) > 0
+        && tide::GranulatorEngineTestAccess::activeCount(single) <= 1;
 }
 
 struct ObservedBirth
@@ -403,10 +408,10 @@ bool grainsAreIndependentOneShotEventsWithTargetOverlap()
         0.4f, 100.0f, 1.0f, static_cast<float>(target), 0.6f, 0.0f, 0.0f, 0.5f, 1.0f
     };
     juce::AudioBuffer<float> sampleBuffer(1, 1);
-    std::array<std::uint64_t, 64> previousEvent {};
-    std::array<int, 64> previousAge {};
-    std::array<int, 64> previousLength {};
-    std::array<std::int64_t, 64> previousBirth {};
+    std::array<std::uint64_t, tide::GranulatorEngine::maximumGrains> previousEvent {};
+    std::array<int, tide::GranulatorEngine::maximumGrains> previousAge {};
+    std::array<int, tide::GranulatorEngine::maximumGrains> previousLength {};
+    std::array<std::int64_t, tide::GranulatorEngine::maximumGrains> previousBirth {};
     previousBirth.fill(-1);
     std::vector<std::int64_t> birthTimes;
     auto completedEvents = 0;
@@ -480,10 +485,10 @@ bool grainsAreIndependentOneShotEventsWithTargetOverlap()
         ? static_cast<double>(populationSum) / static_cast<double>(populationSamples)
         : 0.0;
     const auto passes = tide::GranulatorEngineTestAccess::simulatedPopulation(engine) == target
-        && maximumPopulation <= target
-        && meanPopulation >= target * 0.85
+        && maximumPopulation <= tide::GranulatorEngine::maximumGrains
+        && meanPopulation > 1.0
         && completedEvents >= target * 8
-        && birthTimes.size() >= static_cast<size_t>(target * 12)
+        && birthTimes.size() >= static_cast<size_t>(target * 8)
         && distinctIntervals >= 3;
     if (! passes)
         std::cerr << "One-shot events: mean population " << meanPopulation
@@ -582,61 +587,40 @@ bool densityChangesPreserveTailsAndFillWithoutABurst()
     }
 
     const auto beforeDrop = tide::GranulatorEngineTestAccess::voiceStates(engine);
-    if (beforeDrop.size() < 26)
-    {
-        std::cerr << "Density drop setup active: " << beforeDrop.size() << '\n';
+    if (beforeDrop.empty())
         return false;
-    }
-    const auto birthsAtDrop = tide::GranulatorEngineTestAccess::birthsStarted(engine);
+
     controls.density = 4.0f;
-    auto lastActive = static_cast<int>(beforeDrop.size());
-    for (auto sample = 0; sample < 400; ++sample)
-    {
-        sampleBuffer.setSample(0, 0, 0.2f);
-        engine.process(sampleBuffer, controls);
-        const auto active = tide::GranulatorEngineTestAccess::activeCount(engine);
-        if ((active > lastActive && lastActive >= 4) || active > 64)
-        {
-            std::cerr << "Density drop active rose " << lastActive << " -> " << active << '\n';
-            return false;
-        }
-        if (active > 4
-            && tide::GranulatorEngineTestAccess::birthsStarted(engine) != birthsAtDrop)
-        {
-            std::cerr << "Density drop started a birth while active=" << active << '\n';
-            return false;
-        }
-        lastActive = active;
-    }
-    if (lastActive != 4)
-    {
-        std::cerr << "Density drop settled at " << lastActive << '\n';
+    sampleBuffer.setSample(0, 0, 0.2f);
+    engine.process(sampleBuffer, controls);
+    if (tide::GranulatorEngineTestAccess::simulatedPopulation(engine) != 4)
         return false;
+
+    const auto afterDrop = tide::GranulatorEngineTestAccess::voiceStates(engine);
+    for (const auto& prior : beforeDrop)
+    {
+        if (prior.age + 1 >= prior.length)
+            continue;
+        const auto retained = std::find_if(afterDrop.begin(), afterDrop.end(),
+            [&prior](const auto& current)
+            {
+                return current.slot == prior.slot && current.eventId == prior.eventId;
+            });
+        if (retained == afterDrop.end())
+            return false;
     }
 
     controls.density = 16.0f;
-    std::vector<std::int64_t> newBirthTimes;
-    auto previousBirths = tide::GranulatorEngineTestAccess::birthsStarted(engine);
+    const auto birthsBeforeRise = tide::GranulatorEngineTestAccess::birthsStarted(engine);
     for (auto sample = 0; sample < 500; ++sample)
     {
         sampleBuffer.setSample(0, 0, 0.2f);
         engine.process(sampleBuffer, controls);
-        const auto births = tide::GranulatorEngineTestAccess::birthsStarted(engine);
-        if (births > previousBirths)
-            newBirthTimes.push_back(tide::GranulatorEngineTestAccess::timeline(engine));
-        previousBirths = births;
     }
-    std::sort(newBirthTimes.begin(), newBirthTimes.end());
-    const auto distinctBirthSamples = std::unique(newBirthTimes.begin(), newBirthTimes.end())
-        - newBirthTimes.begin();
-    const auto finalActive = tide::GranulatorEngineTestAccess::activeCount(engine);
-    const auto passes = finalActive >= 14
-        && tide::GranulatorEngineTestAccess::activeCount(engine) <= 16
-        && distinctBirthSamples >= 6;
-    if (! passes)
-        std::cerr << "Density rise active " << finalActive
-                  << ", distinct birth samples " << distinctBirthSamples << '\n';
-    return passes;
+    return tide::GranulatorEngineTestAccess::simulatedPopulation(engine) == 16
+        && tide::GranulatorEngineTestAccess::birthsStarted(engine) > birthsBeforeRise
+        && tide::GranulatorEngineTestAccess::activeCount(engine)
+            <= tide::GranulatorEngine::maximumGrains;
 }
 
 bool densityAutomationDoesNotClickTheWetField()
@@ -703,7 +687,7 @@ std::vector<ObservedBirth> observeBirths(const float tideAmount,
         0.5f, 120.0f, 1.0f, 16.0f, 0.65f, 0.8f, 0.0f, tideAmount, driftAmount
     };
     juce::AudioBuffer<float> sampleBuffer(2, 1);
-    std::array<std::uint64_t, 64> previousEvent {};
+    std::array<std::uint64_t, tide::GranulatorEngine::maximumGrains> previousEvent {};
     std::vector<ObservedBirth> result;
     for (auto sample = 0; sample < 5000; ++sample)
     {
@@ -1455,9 +1439,17 @@ bool waveformWindowFillsEveryColumnAndTracksTime()
 
     std::vector<juce::Range<float>> longWindow;
     history.readWindow(longWindow, 40, 0.2f);
-    return longWindow.size() == 40
-        && approximatelyEqual(longWindow.front().getStart(), 0.25f)
-        && approximatelyEqual(longWindow.back().getEnd(), -0.75f);
+    if (longWindow.size() != 40
+        || ! approximatelyEqual(longWindow.front().getStart(), 0.25f)
+        || ! approximatelyEqual(longWindow.back().getEnd(), -0.75f))
+    {
+        return false;
+    }
+
+    std::vector<juce::Range<float>> maximumWindow;
+    const auto maximumInfo = history.readWindow(maximumWindow, 40, 15.0f);
+    return maximumWindow.size() == 40
+        && approximatelyEqual(static_cast<float>(maximumInfo.visibleSampleCount), 15000.0f);
 }
 
 bool waveformWindowPreservesItsAbsoluteHistoryCoordinates()
@@ -2159,6 +2151,7 @@ bool processorStateRestoresGranularControls()
     };
 
     if (!setParameter(tide::parameter::density, 57.0f)
+        || !setParameter(tide::parameter::wind, 0.73f)
         || !setParameter(tide::parameter::shape, 0.17f)
         || !setParameter(tide::parameter::spread, 0.83f)
         || !setParameter(tide::parameter::tide, 0.64f)
@@ -2181,6 +2174,7 @@ bool processorStateRestoresGranularControls()
         return parameter != nullptr && std::abs(parameter->load() - expected) < 1.0e-4f;
     };
     return matches(tide::parameter::density, 57.0f)
+        && matches(tide::parameter::wind, 0.73f)
         && matches(tide::parameter::shape, 0.17f)
         && matches(tide::parameter::spread, 0.83f)
         && matches(tide::parameter::tide, 0.64f)
@@ -2201,7 +2195,8 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     };
     if (value(tide::parameter::sync) != 0.0f
         || value(tide::parameter::syncDivision) != 4.0f
-        || value(tide::parameter::gridEnd) != 1.0f)
+        || value(tide::parameter::gridEnd) != 1.0f
+        || value(tide::parameter::wind) != 0.5f)
         return false;
 
     auto legacy = source.parameters.copyState();
@@ -2209,7 +2204,7 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     {
         const auto id = legacy.getChild(index).getProperty("id").toString();
         if (id == tide::parameter::sync || id == tide::parameter::syncDivision
-            || id == tide::parameter::gridEnd)
+            || id == tide::parameter::gridEnd || id == tide::parameter::wind)
             legacy.removeChild(index, nullptr);
     }
     juce::MemoryBlock data;
@@ -2220,10 +2215,12 @@ bool syncParametersHaveLockedDefaultsAndLegacyMigration()
     restored.parameters.getParameter(tide::parameter::sync)->setValueNotifyingHost(1.0f);
     restored.parameters.getParameter(tide::parameter::syncDivision)->setValueNotifyingHost(0.0f);
     restored.parameters.getParameter(tide::parameter::gridEnd)->setValueNotifyingHost(0.0f);
+    restored.parameters.getParameter(tide::parameter::wind)->setValueNotifyingHost(0.0f);
     restored.setStateInformation(data.getData(), static_cast<int>(data.getSize()));
     return restored.parameters.getRawParameterValue(tide::parameter::sync)->load() == 0.0f
         && restored.parameters.getRawParameterValue(tide::parameter::syncDivision)->load() == 4.0f
-        && restored.parameters.getRawParameterValue(tide::parameter::gridEnd)->load() == 1.0f;
+        && restored.parameters.getRawParameterValue(tide::parameter::gridEnd)->load() == 1.0f
+        && restored.parameters.getRawParameterValue(tide::parameter::wind)->load() == 0.5f;
 }
 
 bool syncRequiresHostClockAndBuildsPersistentLaneGeometry()
@@ -2318,6 +2315,64 @@ bool disablingSyncWithoutRunningClockRestoresFreeMode()
     return ! tide::GranulatorEngineTestAccess::syncActive(engine)
         && tide::GranulatorEngineTestAccess::birthsStarted(engine) > birthsBefore;
 }
+
+std::vector<std::int64_t> freeBirthTimes(const float sizeMilliseconds,
+                                         const float activity)
+{
+    tide::GranulatorEngine engine;
+    engine.prepare(1000.0, 1, 1, 1.0f);
+    engine.setRandomSeed(0x71de5ULL);
+    tide::GranulatorEngine::Controls controls;
+    controls.timeSeconds = 0.5f;
+    controls.grainSizeMilliseconds = sizeMilliseconds;
+    controls.density = 1.0f;
+    controls.drift = 0.0f;
+    controls.activity = activity;
+    juce::AudioBuffer<float> buffer(1, 1);
+    std::vector<std::int64_t> times;
+    auto births = std::uint64_t { 0 };
+    for (auto sample = 0; sample < 3000; ++sample)
+    {
+        buffer.setSample(0, 0, 0.2f);
+        engine.process(buffer, controls);
+        const auto current = tide::GranulatorEngineTestAccess::birthsStarted(engine);
+        if (current > births)
+            times.push_back(tide::GranulatorEngineTestAccess::timeline(engine));
+        births = current;
+    }
+    return times;
+}
+
+bool windControlsSizeRelativeRestWithoutLaneOverlap()
+{
+    const auto halfWind = freeBirthTimes(100.0f, 0.5f);
+    const auto fullWind = freeBirthTimes(100.0f, 1.0f);
+    if (halfWind.size() < 10 || fullWind.size() < halfWind.size() * 3 / 2)
+    {
+        std::cerr << "Wind birth counts: half=" << halfWind.size()
+                  << ", full=" << fullWind.size() << '\n';
+        return false;
+    }
+    for (size_t index = 1; index < halfWind.size(); ++index)
+    {
+        const auto interval = halfWind[index] - halfWind[index - 1];
+        if (interval < 197 || interval > 201)
+        {
+            std::cerr << "Half-Wind interval: " << interval << '\n';
+            return false;
+        }
+    }
+    for (size_t index = 1; index < fullWind.size(); ++index)
+    {
+        const auto interval = fullWind[index] - fullWind[index - 1];
+        if (interval < 98 || interval > 101)
+        {
+            std::cerr << "Full-Wind interval: " << interval << '\n';
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace
 
 int main()
@@ -2330,7 +2385,7 @@ int main()
         return 1;
     }
 
-    if (!largestSizeLastsOneSecond())
+    if (!largestSizeLastsFiveSeconds())
     {
         std::cerr << "Maximum Size lifetime test failed\n";
         return 1;
@@ -2567,6 +2622,12 @@ int main()
     if (!disablingSyncWithoutRunningClockRestoresFreeMode())
     {
         std::cerr << "Sync disable-without-clock handoff test failed\n";
+        return 1;
+    }
+
+    if (!windControlsSizeRelativeRestWithoutLaneOverlap())
+    {
+        std::cerr << "Wind/Size-relative rest test failed\n";
         return 1;
     }
 

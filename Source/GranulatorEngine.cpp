@@ -9,12 +9,14 @@ namespace
 {
 constexpr float baseSafetyMarginSeconds = 0.010f;
 constexpr float minimumGrainSeconds = 0.005f;
-constexpr float maximumGrainSeconds = 1.000f;
+constexpr float maximumGrainSeconds = 5.000f;
 constexpr float minimumTimeSeconds = 0.020f;
-constexpr float maximumTimeSeconds = 5.0f;
+constexpr float maximumTimeSeconds = 15.0f;
 constexpr float maximumSpeedDeviation = 0.01f;
 constexpr float maximumLifetimeVariation = 0.15f;
-constexpr float maximumBirthJitter = 0.15f;
+constexpr float maximumEventTimingJitter = 0.15f;
+constexpr float maximumLaneRateSpread = 0.50f;
+constexpr float laneRateWalkStep = 0.035f;
 constexpr float minimumTrailProportion = 0.015f;
 constexpr float maximumTrailProportion = 0.55f;
 constexpr float maximumSourceDriftSeconds = 0.020f;
@@ -73,7 +75,7 @@ void GranulatorEngine::prepare(const double sampleRate,
 
     currentSampleRate = juce::jmax(1.0, sampleRate);
     currentChannelCount = std::clamp(channelCount, 1, 2);
-    historyLength = static_cast<int>(std::ceil(5.0 * currentSampleRate)) + 2;
+    historyLength = static_cast<int>(std::ceil(15.0 * currentSampleRate)) + 2;
 
     history.setSize(currentChannelCount, historyLength, false, true, false);
     mixSmoother.reset(currentSampleRate, 0.02);
@@ -112,11 +114,10 @@ void GranulatorEngine::resetPlayback(const std::int64_t newTimelineSample) noexc
         grain = {};
 
     timelineSample = newTimelineSample;
-    nextBirthSample = static_cast<double>(newTimelineSample);
     nominalWetNormalization = 1.0f;
     activeGrainCount = 0;
-    targetPopulation = 0;
     birthOrdinal = 0;
+    freeState = {};
     syncState = {};
 }
 
@@ -169,11 +170,11 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
     {
         releaseAllSyncVoices();
         syncState = {};
-        nextBirthSample = static_cast<double>(timelineSample);
+        freeState = {};
     }
 
     if (! controls.sync && ! syncState.active)
-        reconcilePopulation(controls);
+        reconcileFreeLanes(controls);
 
     if (controls.sync && timing.playing && ! validClock && syncState.clockWasValid)
         releaseAllSyncVoices();
@@ -217,7 +218,7 @@ void GranulatorEngine::process(juce::AudioBuffer<float>& buffer,
         if (controls.sync || syncState.active)
             processSyncEvents(controls, timing, currentPpq);
         else
-            scheduleBirths(controls, tide, drift);
+            processFreeEvents(controls, tide, drift);
 
         for (auto& grain : grains)
         {
@@ -462,7 +463,8 @@ void GranulatorEngine::processSyncEvents(const Controls& controls,
             }
         }
         syncState = {};
-        reconcilePopulation(controls);
+        freeState = {};
+        reconcileFreeLanes(controls);
         return;
     }
 
@@ -470,8 +472,8 @@ void GranulatorEngine::processSyncEvents(const Controls& controls,
     {
         releaseAllSyncVoices();
         syncState = {};
-        nextBirthSample = static_cast<double>(timelineSample);
-        reconcilePopulation(controls);
+        freeState = {};
+        reconcileFreeLanes(controls);
         return;
     }
 
@@ -503,7 +505,7 @@ void GranulatorEngine::commitSyncBoundary(const Controls& controls,
 {
     const auto newDivision = juce::jlimit(0, 8, controls.syncDivision);
     const auto duration = divisionPpq(newDivision);
-    const auto density = juce::jlimit(1, maximumGrains,
+    const auto density = juce::jlimit(1, maximumLanes,
                                      static_cast<int>(std::round(controls.density)));
     const auto drift = juce::jlimit(0.0f, 1.0f, controls.drift);
 
@@ -529,7 +531,7 @@ void GranulatorEngine::commitSyncBoundary(const Controls& controls,
                                                              * currentSampleRate));
     const auto safeSpan = available - latestOffsetSamples - safety;
 
-    for (auto lane = 0; lane < maximumGrains; ++lane)
+    for (auto lane = 0; lane < maximumLanes; ++lane)
     {
         auto& state = syncState.lanes[static_cast<size_t>(lane)];
         state = {};
@@ -611,56 +613,77 @@ bool GranulatorEngine::beginSyncLane(const int laneIndex,
     return true;
 }
 
-void GranulatorEngine::reconcilePopulation(const Controls& controls) noexcept
+void GranulatorEngine::reconcileFreeLanes(const Controls& controls) noexcept
 {
     const auto requestedCount = juce::jlimit(
-        1,
-        maximumGrains,
-        static_cast<int>(std::round(controls.density)));
+        1, maximumLanes, static_cast<int>(std::round(controls.density)));
 
-    if (requestedCount > targetPopulation)
-        nextBirthSample = static_cast<double>(timelineSample);
+    if (requestedCount == freeState.activeLaneCount)
+        return;
 
-    // A decrease never cuts live events. Births remain suppressed until their
-    // natural releases bring the sounding population down to the new target.
-    targetPopulation = requestedCount;
+    const auto nominalLength = requestedLengthInSamples(controls);
+    const auto wind = juce::jlimit(0.0f, 1.0f, controls.activity);
+    const auto nominalRest = static_cast<double>(nominalLength)
+        * 4.0 * static_cast<double>((1.0f - wind) * (1.0f - wind));
+    const auto nominalCycle = static_cast<double>(nominalLength) + nominalRest;
+    for (auto laneIndex = 0; laneIndex < maximumLanes; ++laneIndex)
+    {
+        auto& lane = freeState.lanes[static_cast<size_t>(laneIndex)];
+        if (laneIndex < requestedCount && ! lane.active)
+        {
+            lane = {};
+            lane.active = true;
+            const auto phase = laneIndex == 0 ? 0.0
+                : static_cast<double>(wrappedUnit((static_cast<float>(laneIndex) + 0.5f)
+                                                   * goldenRatioConjugate));
+            lane.nextOnsetSample = static_cast<double>(timelineSample) + nominalCycle * phase;
+        }
+        else if (laneIndex >= requestedCount)
+        {
+            // Voices already emitted by a removed lane finish naturally.
+            lane.active = false;
+        }
+    }
+    freeState.activeLaneCount = requestedCount;
 }
 
-void GranulatorEngine::scheduleBirths(const Controls& controls,
-                                      const float tide,
-                                      const float drift) noexcept
+void GranulatorEngine::processFreeEvents(const Controls& controls,
+                                         const float tide,
+                                         const float drift) noexcept
 {
-    auto attempts = 0;
-    while (activeGrainCount < targetPopulation
-           && nextBirthSample <= static_cast<double>(timelineSample) + schedulerEpsilon
-           && attempts < maximumGrains)
+    for (auto laneIndex = 0; laneIndex < freeState.activeLaneCount; ++laneIndex)
     {
-        Grain* freeGrain = nullptr;
-        for (auto& grain : grains)
+        auto& lane = freeState.lanes[static_cast<size_t>(laneIndex)];
+        if (! lane.active
+            || lane.nextOnsetSample > static_cast<double>(timelineSample) + schedulerEpsilon)
+            continue;
+
+        // Free lanes are strictly monophonic: lane N permanently owns voice N.
+        // Wind only controls the rest after that voice's Size-defined lifetime.
+        auto& grain = grains[static_cast<size_t>(laneIndex)];
+        if (grain.active)
+            continue;
+
+        if (! beginOneShot(grain, laneIndex, controls, tide, drift))
         {
-            if (! grain.active)
-            {
-                freeGrain = &grain;
-                break;
-            }
+            // History is not readable yet. Retry without consuming the event.
+            lane.nextOnsetSample = static_cast<double>(timelineSample + 1);
+            continue;
         }
-
-        if (freeGrain == nullptr)
-            break;
-
-        if (! beginOneShot(*freeGrain, controls, tide, drift))
-        {
-            nextBirthSample = static_cast<double>(timelineSample + 1);
-            break;
-        }
-
         ++activeGrainCount;
-        nextBirthSample += nextBirthInterval(*freeGrain, controls, drift);
-        ++attempts;
+        const auto rest = laneRestSamples(lane,
+                                          laneIndex,
+                                          grain.lengthInSamples,
+                                          controls.activity,
+                                          drift);
+        lane.nextOnsetSample = static_cast<double>(timelineSample)
+            + static_cast<double>(grain.lengthInSamples) + rest;
+        ++lane.articulationOrdinal;
     }
 }
 
 bool GranulatorEngine::beginOneShot(Grain& grain,
+                                    const int laneIndex,
                                     const Controls& controls,
                                     const float tide,
                                     const float drift) noexcept
@@ -737,6 +760,7 @@ bool GranulatorEngine::beginOneShot(Grain& grain,
     grain = {};
     grain.active = true;
     grain.hasReadableSource = true;
+    grain.sourceLane = laneIndex;
     grain.birthSample = timelineSample;
     grain.eventId = eventId;
     grain.lengthInSamples = length;
@@ -763,16 +787,29 @@ bool GranulatorEngine::beginOneShot(Grain& grain,
     return true;
 }
 
-double GranulatorEngine::nextBirthInterval(const Grain& grain,
-                                           const Controls& controls,
-                                           const float drift) const noexcept
+double GranulatorEngine::laneRestSamples(FreeState::Lane& lane,
+                                         const int laneIndex,
+                                         const int grainLengthSamples,
+                                         const float wind,
+                                         const float drift) noexcept
 {
-    const auto nominalInterval = static_cast<double>(requestedLengthInSamples(controls))
-        / static_cast<double>(juce::jmax(1, targetPopulation));
-    const auto eventStream = grain.eventId * 17ULL;
-    const auto jitter = (randomUnit(grain.birthSample, eventStream + 6ULL) * 2.0f - 1.0f)
-        * maximumBirthJitter * juce::jlimit(0.0f, 1.0f, drift);
-    return juce::jmax(0.0625, nominalInterval * (1.0 + static_cast<double>(jitter)));
+    const auto amount = juce::jlimit(0.0f, 1.0f, drift);
+    const auto stream = static_cast<std::uint64_t>(laneIndex) * 4099ULL
+        + lane.articulationOrdinal * 17ULL;
+    const auto walk = (randomUnit(timelineSample, stream + 701ULL) * 2.0f - 1.0f)
+        * laneRateWalkStep * amount;
+    lane.rateTendency = juce::jlimit(1.0f - maximumLaneRateSpread * amount,
+                                    1.0f + maximumLaneRateSpread * amount,
+                                    lane.rateTendency + walk);
+    const auto jitter = (randomUnit(timelineSample, stream + 702ULL) * 2.0f - 1.0f)
+        * maximumEventTimingJitter * amount;
+    // Wind describes space between articulations, relative to Size: calm waits
+    // four grain lengths, halfway waits one, and full Wind is back-to-back.
+    const auto inverseWind = 1.0f - juce::jlimit(0.0f, 1.0f, wind);
+    const auto nominalRest = static_cast<double>(grainLengthSamples)
+        * 4.0 * static_cast<double>(inverseWind * inverseWind);
+    return juce::jmax(0.0, nominalRest
+        * static_cast<double>(lane.rateTendency * (1.0f + jitter)));
 }
 
 int GranulatorEngine::requestedLengthInSamples(const Controls& controls) const noexcept

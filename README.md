@@ -14,9 +14,9 @@ The plug-in now contains the integrated asynchronous granular-wave DSP:
 - parameter state save/restore
 - a custom resizable JUCE editor with a parameter-reactive tidal field
 - a heavily branded deep-water visual system with live internal-history waves and exact grain read heads
-- a preallocated five-second stereo rolling buffer
-- a preallocated pool supporting a target population of 1–64 simultaneous one-shot grains
-- independently staggered grain births with deterministic timing jitter and no shared amplitude cycle
+- a preallocated fifteen-second stereo rolling buffer
+- 1–64 independent monophonic grain lanes feeding a preallocated 64-voice pool
+- Wind-controlled rests between lane articulations, with deterministic per-lane timing drift and no shared pulse
 - Size-defined nominal lifetimes: each grain plays once, releases, and never restarts
 - a slowly moving shared source centroid that keeps the captured input recognizable
 - Tide-controlled birth trails: low Tide stays close behind the centroid; high Tide spills farther into its wake
@@ -36,18 +36,21 @@ centroid is calculated from those live read heads rather than animated separatel
 
 ## Initial controls
 
-- **Time**: selected buffer history, up to 5 seconds
+- **Time**: selected buffer history, up to 15 seconds
 - **Tide**: distance that new births may trail the moving source centroid; low is tight, high is broad
-- **Size**: nominal lifetime of each one-shot grain
-- **Density**: target simultaneous population, from 1 to 64 sounding grains
+- **Size**: nominal lifetime of each one-shot grain, up to 5 seconds
+- **Density**: number of independent grain lanes, from 1 to 64
+- **Wind**: rest between grains relative to Size; calm leaves four grain lengths, halfway leaves one, and full Wind is back-to-back; inactive in Sync mode
 - **Shape**: softened descending saw envelope to sine envelope
 - **Spread**: stereo placement range
 - **Drift**: bounded launch-timing, source, playback-speed, and spatial variation
 - **Feedback**: processed grains returned to the effect
 - **Mix**: dry/wet balance
 
-The scheduler launches new grains before older grains finish, at a rate derived
-from Density and Size, with deterministic jitter to avoid a mechanical clock.
+In Free mode, each Density lane owns one voice and never overlaps itself. Size
+controls grain lifetime; Wind controls the rest after it, from four grain lengths
+at calm to back-to-back articulation at full Wind. Deterministic correlated timing
+drift keeps the lanes evolving without a shared mechanical clock.
 Existing grains retain the state they captured at birth, so control changes wash
 through the texture as new generations arrive. Tide changes the source-history
 trail behind the centroid, not a shared amplitude phase. Drift stays bounded so

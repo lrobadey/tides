@@ -37,6 +37,7 @@ TideGrainsAudioProcessor::TideGrainsAudioProcessor()
     syncDivisionParameter = parameters.getRawParameterValue(tide::parameter::syncDivision);
     gridEndParameter = parameters.getRawParameterValue(tide::parameter::gridEnd);
     densityParameter = parameters.getRawParameterValue(tide::parameter::density);
+    windParameter = parameters.getRawParameterValue(tide::parameter::wind);
     shapeParameter = parameters.getRawParameterValue(tide::parameter::shape);
     spreadParameter = parameters.getRawParameterValue(tide::parameter::spread);
     driftParameter = parameters.getRawParameterValue(tide::parameter::drift);
@@ -52,6 +53,7 @@ TideGrainsAudioProcessor::TideGrainsAudioProcessor()
     jassert(syncDivisionParameter != nullptr);
     jassert(gridEndParameter != nullptr);
     jassert(densityParameter != nullptr);
+    jassert(windParameter != nullptr);
     jassert(shapeParameter != nullptr);
     jassert(spreadParameter != nullptr);
     jassert(driftParameter != nullptr);
@@ -95,7 +97,7 @@ void TideGrainsAudioProcessor::prepareToPlay(const double sampleRate,
     expectedHostSample.reset();
     hostWasPlaying = false;
     lastPlayingBpm = 0.0;
-    synchronizedTailSeconds.store(5.0, std::memory_order_relaxed);
+    synchronizedTailSeconds.store(20.0, std::memory_order_relaxed);
 }
 
 void TideGrainsAudioProcessor::releaseResources()
@@ -171,7 +173,7 @@ void TideGrainsAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 constexpr std::array<int, 9> ticks { 2, 3, 4, 6, 8, 12, 16, 24, 32 };
                 const auto durationSeconds = (static_cast<double>(ticks[static_cast<size_t>(division)])
                     / 16.0) * 60.0 / *bpm;
-                synchronizedTailSeconds.store(juce::jmax(5.0, durationSeconds),
+                synchronizedTailSeconds.store(juce::jmax(20.0, durationSeconds),
                                               std::memory_order_relaxed);
             }
             else if (! isPlaying)
@@ -199,7 +201,8 @@ void TideGrainsAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         driftParameter->load(),
         syncParameter->load() >= 0.5f,
         static_cast<int>(std::round(syncDivisionParameter->load())),
-        gridEndParameter->load() >= 0.5f
+        gridEndParameter->load() >= 0.5f,
+        windParameter->load()
     };
 
     applySmoothedGain(buffer,
@@ -355,6 +358,7 @@ void TideGrainsAudioProcessor::setStateInformation(const void* data,
             addMissingParameter(tide::parameter::sync, 0.0f);
             addMissingParameter(tide::parameter::syncDivision, 4.0f);
             addMissingParameter(tide::parameter::gridEnd, 1.0f);
+            addMissingParameter(tide::parameter::wind, 0.5f);
             parameters.replaceState(restored);
 
             const auto seed = parameters.state.getProperty("randomSeed");
@@ -372,10 +376,10 @@ TideGrainsAudioProcessor::createParameterLayout()
 
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    auto timeRange = Range { 0.02f, 5.0f, 0.001f };
+    auto timeRange = Range { 0.02f, 15.0f, 0.001f };
     timeRange.setSkewForCentre(0.5f);
 
-    auto sizeRange = Range { 5.0f, 1000.0f, 0.1f };
+    auto sizeRange = Range { 5.0f, 5000.0f, 0.1f };
     sizeRange.setSkewForCentre(40.0f);
 
     auto densityRange = Range { 1.0f, 64.0f, 1.0f };
@@ -404,7 +408,9 @@ TideGrainsAudioProcessor::createParameterLayout()
         juce::ParameterID { tide::parameter::gridEnd, 1 }, "Grid End", true));
     layout.add(std::make_unique<Parameter>(
         juce::ParameterID { tide::parameter::density, 1 }, "Density", densityRange, 10.0f,
-        juce::AudioParameterFloatAttributes().withLabel("grains")));
+        juce::AudioParameterFloatAttributes().withLabel("lanes")));
+    layout.add(std::make_unique<Parameter>(
+        juce::ParameterID { tide::parameter::wind, 1 }, "Wind", Range { 0.0f, 1.0f }, 0.5f));
     layout.add(std::make_unique<Parameter>(
         juce::ParameterID { tide::parameter::shape, 1 }, "Shape", Range { 0.0f, 1.0f }, 0.5f));
     layout.add(std::make_unique<Parameter>(

@@ -316,7 +316,7 @@ void TideParameter::paint(juce::Graphics& g)
     else if (name == "SIZE")
         value = juce::String(slider.getValue(), 0) + " ms";
     else if (name == "DENSITY")
-        value = juce::String(slider.getValue(), 1) + " grains";
+        value = juce::String(slider.getValue(), 0) + " lanes";
     else if (name.endsWith("GAIN"))
         value = (slider.getValue() >= 0.05 ? "+" : "")
             + juce::String(slider.getValue(), 1) + " dB";
@@ -830,13 +830,14 @@ TidesAudioProcessorEditor::TidesAudioProcessorEditor(TideGrainsAudioProcessor& o
       mix(owner.parameters, tide::parameter::mix, "Mix", true),
       size(owner.parameters),
       density(owner.parameters, tide::parameter::density, "Density"),
+      wind(owner.parameters, tide::parameter::wind, "Wind"),
       shape(owner.parameters, tide::parameter::shape, "Shape"),
       spread(owner.parameters, tide::parameter::spread, "Spread"),
       drift(owner.parameters, tide::parameter::drift, "Drift"),
       sync(owner.parameters, tide::parameter::sync, "Sync"),
       gridEnd(owner.parameters, tide::parameter::gridEnd, "Grid End"),
       feedback(owner.parameters, tide::parameter::feedback, "Feedback"),
-      lowerControls { &size, &density, &shape, &spread, &drift, &gridEnd, &feedback }
+      lowerControls { &size, &density, &wind, &shape, &spread, &drift, &gridEnd, &feedback }
 {
     setLookAndFeel(&lookAndFeel);
     setOpaque(true);
@@ -853,6 +854,7 @@ TidesAudioProcessorEditor::TidesAudioProcessorEditor(TideGrainsAudioProcessor& o
 
     sync.setTooltip("Sync requires a valid playing host BPM and PPQ clock; no internal clock is used.");
     gridEnd.setTooltip("With Grid End off, Drift layout changes form on the following cycle.");
+
     applySyncMode(owner.parameters.getRawParameterValue(tide::parameter::sync)->load() >= 0.5f);
     startTimerHz(20);
 
@@ -868,6 +870,8 @@ void TidesAudioProcessorEditor::applySyncMode(const bool enabled)
     size.setSyncMode(enabled);
     gridEnd.setEnabled(enabled);
     gridEnd.setAlpha(enabled ? 1.0f : 0.42f);
+    wind.setEnabled(! enabled);
+    wind.setAlpha(enabled ? 0.42f : 1.0f);
     repaint();
 }
 

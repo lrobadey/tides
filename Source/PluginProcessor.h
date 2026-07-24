@@ -68,6 +68,7 @@ private:
     std::atomic<float>* syncDivisionParameter = nullptr;
     std::atomic<float>* gridEndParameter = nullptr;
     std::atomic<float>* densityParameter = nullptr;
+    std::atomic<float>* windParameter = nullptr;
     std::atomic<float>* shapeParameter = nullptr;
     std::atomic<float>* spreadParameter = nullptr;
     std::atomic<float>* driftParameter = nullptr;
@@ -84,7 +85,7 @@ private:
     std::uint64_t displayGeneration = 1;
     bool hostWasPlaying = false;
     double lastPlayingBpm = 0.0;
-    std::atomic<double> synchronizedTailSeconds { 5.0 };
+    std::atomic<double> synchronizedTailSeconds { 20.0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TideGrainsAudioProcessor)
 };
